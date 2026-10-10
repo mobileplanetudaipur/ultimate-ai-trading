@@ -11,55 +11,50 @@ export class EconomicCalendarService {
     const now = Date.now();
     this.events = [
       {
-        id: 'evt_1',
-        title: 'US Core Consumer Price Index (CPI YoY)',
+        id: 'scenario_evt_1',
+        title: 'US Core Consumer Price Index (CPI YoY) [Testing Scenario]',
         currency: 'USD',
         impact: 'HIGH',
-        scheduledTime: now + 35 * 60 * 1000, // in 35 mins (will trigger approaching blackout!)
+        scheduledTime: now + 35 * 60 * 1000, // Approaching blackout testing scenario
         forecast: '3.2%',
-        previous: '3.3%'
+        previous: '3.3%',
+        isSyntheticTestScenario: true
       },
       {
-        id: 'evt_2',
-        title: 'FOMC Federal Reserve Funds Rate Decision',
+        id: 'scenario_evt_2',
+        title: 'FOMC Federal Reserve Funds Rate Decision [Testing Scenario]',
         currency: 'USD',
         impact: 'HIGH',
         scheduledTime: now + 180 * 60 * 1000,
         forecast: '5.25%',
-        previous: '5.25%'
+        previous: '5.25%',
+        isSyntheticTestScenario: true
       },
       {
-        id: 'evt_3',
-        title: 'German Manufacturing PMI',
+        id: 'scenario_evt_3',
+        title: 'German Manufacturing PMI [Testing Scenario]',
         currency: 'EUR',
         impact: 'MEDIUM',
         scheduledTime: now + 320 * 60 * 1000,
         forecast: '44.8',
-        previous: '43.2'
+        previous: '43.2',
+        isSyntheticTestScenario: true
       },
       {
-        id: 'evt_4',
-        title: 'Bank of Japan (BOJ) Policy Rate Statement',
+        id: 'scenario_evt_4',
+        title: 'Bank of Japan (BOJ) Policy Rate Statement [Testing Scenario]',
         currency: 'JPY',
         impact: 'HIGH',
         scheduledTime: now + 720 * 60 * 1000,
         forecast: '0.25%',
-        previous: '0.10%'
+        previous: '0.10%',
+        isSyntheticTestScenario: true
       }
     ];
   }
 
   public getUpcomingEvents(): EconomicEvent[] {
     return [...this.events].sort((a, b) => a.scheduledTime - b.scheduledTime);
-  }
-
-  public addEvent(event: Omit<EconomicEvent, 'id'>): EconomicEvent {
-    const newEvent: EconomicEvent = {
-      ...event,
-      id: 'evt_' + Math.random().toString(36).substring(2, 7)
-    };
-    this.events.push(newEvent);
-    return newEvent;
   }
 }
 

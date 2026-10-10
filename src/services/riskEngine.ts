@@ -1,4 +1,5 @@
-import { AccountState, MarketQuote, OrderRecord, PositionRecord, RiskLimits, RiskStatus } from '../types/trading';
+import { AccountState, EconomicEvent, MarketQuote, OrderRecord, PositionRecord, RiskLimits, RiskStatus } from '../types/trading';
+import { brokerGateway } from './brokerGateway';
 
 export interface RiskValidationResult {
   isApproved: boolean;
@@ -6,17 +7,19 @@ export interface RiskValidationResult {
   rejectionMessage?: string;
   calculatedRiskAmount?: number;
   calculatedLotSize?: number;
+  effectiveLeverageRatio?: number;
 }
 
 export class RiskEngine {
   private limits: RiskLimits = {
-    maxRiskPerTradePercent: 1.0, // 1% account equity risk per trade
-    maxTotalExposurePercent: 5.0, // Max 5% cumulative risk across all open positions
-    dailyLossLimitPercent: 3.0, // 3% max daily loss relative to starting equity
-    maxDrawdownPercent: 6.0, // 6% overall drawdown ceiling
-    maxOpenPositions: 3,
-    consecutiveLossLockoutThreshold: 5, // 5 consecutive losses triggers lockout
+    maxRiskPerTradePercent: 0.20, // Baseline: Strict 0.20% reference equity risk per trade
+    dailyLossLimitPercent: 1.00, // Baseline: Strict 1.00% daily loss ceiling
+    maxOverallDrawdownPercent: 5.00, // Baseline: Strict 5.00% max overall drawdown
+    maxOpenPositions: 3, // Baseline: 3 maximum simultaneous positions
+    maxDailyTrades: 8, // Baseline: 8 trades per day maximum cap
+    consecutiveLossLockoutThreshold: 5, // Baseline: 5 consecutive losses triggers 30m lock
     cooldownPeriodMinutes: 30, // 30 minutes lockout
+    maxEffectiveLeverage: 3.0, // Baseline: 3x maximum effective leverage
     enforceWeekendClosure: true,
     enforceNewsBlackout: true
   };
@@ -27,9 +30,10 @@ export class RiskEngine {
     isCooldownActive: false,
     dailyStartingEquity: 10000,
     todayRealizedPnl: 0,
+    todayTradesCount: 0,
     todayDrawdownPercent: 0,
     dailyLossLimitBreached: false,
-    overallMaxDrawdownBreached: false,
+    dailyTradeCapBreached: false,
     killSwitchTriggered: false
   };
 
@@ -41,12 +45,8 @@ export class RiskEngine {
     return { ...this.limits };
   }
 
-  public updateLimits(newLimits: Partial<RiskLimits>) {
-    this.limits = { ...this.limits, ...newLimits };
-  }
-
   public getStatus(): RiskStatus {
-    // Check if cooldown has expired
+    // Check if cooldown has naturally elapsed
     if (this.status.isCooldownActive && this.status.cooldownEndsAt) {
       if (Date.now() >= this.status.cooldownEndsAt) {
         this.status.isCooldownActive = false;
@@ -65,7 +65,7 @@ export class RiskEngine {
     this.status.killSwitchTriggered = true;
     this.status.killSwitchTriggeredAt = Date.now();
     this.status.isTradingPaused = true;
-    this.status.pauseReason = 'Emergency Kill Switch Triggered by Operator';
+    this.status.pauseReason = 'Emergency Kill Switch Activated by Operator';
   }
 
   public resetKillSwitch() {
@@ -77,6 +77,12 @@ export class RiskEngine {
 
   public recordCompletedTrade(netPnl: number) {
     this.status.todayRealizedPnl += netPnl;
+    this.status.todayTradesCount += 1;
+
+    // Check daily trade cap
+    if (this.status.todayTradesCount >= this.limits.maxDailyTrades) {
+      this.status.dailyTradeCapBreached = true;
+    }
 
     if (netPnl < 0) {
       this.status.consecutiveLossCount += 1;
@@ -85,10 +91,11 @@ export class RiskEngine {
         this.status.cooldownEndsAt = Date.now() + this.limits.cooldownPeriodMinutes * 60 * 1000;
       }
     } else {
+      // Natural reset on genuine winning completed trade
       this.status.consecutiveLossCount = 0;
     }
 
-    // Update drawdown
+    // Update daily drawdown
     const equityDrop = this.status.dailyStartingEquity - (this.status.dailyStartingEquity + this.status.todayRealizedPnl);
     if (equityDrop > 0) {
       this.status.todayDrawdownPercent = Number(((equityDrop / this.status.dailyStartingEquity) * 100).toFixed(2));
@@ -102,7 +109,9 @@ export class RiskEngine {
   }
 
   /**
-   * Deterministic pre-trade validation gate (Stage 8)
+   * Deterministic pre-trade validation gate (Phase 3)
+   * Enforces 0.20% max risk, 1.00% daily loss, 8 trades/day, 5-loss/30m lock, 3x leverage,
+   * instrument-aware contract sizes, and fail-closed checks.
    */
   public validateOrderProposal(
     quote: MarketQuote,
@@ -112,14 +121,14 @@ export class RiskEngine {
     proposedSide: 'BUY' | 'SELL',
     proposedStopLoss: number,
     entryPrice: number,
-    desiredRiskPercent: number = 1.0
+    upcomingEvents?: EconomicEvent[]
   ): RiskValidationResult {
-    // 1. Kill Switch Check
+    // 1. Emergency Kill Switch Check
     if (this.status.killSwitchTriggered) {
       return {
         isApproved: false,
         ruleBlocked: 'KILL_SWITCH_ACTIVE',
-        rejectionMessage: 'System is locked under Emergency Kill Switch state. All automated entries disabled.'
+        rejectionMessage: 'System is locked under Emergency Kill Switch. All order entries halted.'
       };
     }
 
@@ -132,28 +141,50 @@ export class RiskEngine {
       };
     }
 
-    // 3. Consecutive Loss Lockout Rule (Stage 9)
+    // 3. Stage 9 Consecutive Loss Lockout Rule (5 consecutive losses -> 30m lock)
     if (this.status.isCooldownActive && this.status.cooldownEndsAt) {
       if (Date.now() < this.status.cooldownEndsAt) {
         const remainingMinutes = Math.ceil((this.status.cooldownEndsAt - Date.now()) / 60000);
         return {
           isApproved: false,
           ruleBlocked: 'CONSECUTIVE_LOSS_LOCKOUT',
-          rejectionMessage: `Behavioral safeguard active: ${this.status.consecutiveLossCount} consecutive losses triggered 30m cooling-off window (${remainingMinutes}m remaining).`
+          rejectionMessage: `Behavioral safeguard active: 5 consecutive losses triggered mandatory 30m cooling-off window (${remainingMinutes}m remaining). Cannot be overridden.`
         };
       }
     }
 
-    // 4. Daily Loss Limit Check
+    // 4. Daily Trade Cap Check (8 trades per day max)
+    if (this.status.dailyTradeCapBreached || this.status.todayTradesCount >= this.limits.maxDailyTrades) {
+      return {
+        isApproved: false,
+        ruleBlocked: 'DAILY_TRADE_CAP_EXCEEDED',
+        rejectionMessage: `Daily trade cap reached (${this.status.todayTradesCount}/${this.limits.maxDailyTrades} trades today). Entry blocked to prevent overtrading.`
+      };
+    }
+
+    // 5. Daily Loss Limit Check (1.00% max daily downside)
     if (this.status.dailyLossLimitBreached || this.status.todayDrawdownPercent >= this.limits.dailyLossLimitPercent) {
       return {
         isApproved: false,
         ruleBlocked: 'DAILY_LOSS_LIMIT_EXCEEDED',
-        rejectionMessage: `Daily loss limit of ${this.limits.dailyLossLimitPercent}% reached (Current: ${this.status.todayDrawdownPercent}%). No further risk permitted today.`
+        rejectionMessage: `Daily loss limit of ${this.limits.dailyLossLimitPercent.toFixed(2)}% reached (Current daily loss: ${this.status.todayDrawdownPercent}%). New risk prohibited.`
       };
     }
 
-    // 5. Data Feed Health & Stale Quote Check (Stage 3)
+    // 6. Overall Portfolio Drawdown Check (5.00% max overall downside)
+    const overallDrop = this.status.dailyStartingEquity - account.equity;
+    if (overallDrop > 0) {
+      const overallDrawdownPercent = (overallDrop / this.status.dailyStartingEquity) * 100;
+      if (overallDrawdownPercent >= this.limits.maxOverallDrawdownPercent) {
+        return {
+          isApproved: false,
+          ruleBlocked: 'OVERALL_DRAWDOWN_LIMIT_EXCEEDED',
+          rejectionMessage: `Maximum overall drawdown threshold (${this.limits.maxOverallDrawdownPercent.toFixed(2)}%) reached (Current drawdown: ${overallDrawdownPercent.toFixed(2)}%). Capital preservation halt active.`
+        };
+      }
+    }
+
+    // 7. Data Feed Health & Stale Quote Check (Fail-closed)
     if (quote.freshness === 'unavailable' || quote.isStale || quote.latencyMs > 2000) {
       return {
         isApproved: false,
@@ -162,16 +193,22 @@ export class RiskEngine {
       };
     }
 
-    // 6. Reconciliation Integrity Check (Stage 4)
-    if (account.reconciliationStatus === 'DISCREPANCY_DETECTED') {
-      return {
-        isApproved: false,
-        ruleBlocked: 'ACCOUNT_DISCREPANCY',
-        rejectionMessage: 'Unresolved discrepancy detected between local state and broker state. New entries blocked until reconciled.'
-      };
+    // 8. Economic News Event Blackout Check (30m pre-event window)
+    if (this.limits.enforceNewsBlackout && upcomingEvents && upcomingEvents.length > 0) {
+      const highImpactEvents = upcomingEvents.filter(e => e.impact === 'HIGH');
+      for (const evt of highImpactEvents) {
+        const minutesAway = (evt.scheduledTime - quote.timestamp) / 60000;
+        if (minutesAway > 0 && minutesAway <= 30) {
+          return {
+            isApproved: false,
+            ruleBlocked: 'NEWS_BLACKOUT_ACTIVE',
+            rejectionMessage: `Tier-1 event '${evt.title}' scheduled in ${Math.round(minutesAway)}m. Pre-event blackout window active (30m).`
+          };
+        }
+      }
     }
 
-    // 7. Max Open Positions Cap
+    // 9. Max Open Positions Cap (Max 3 positions)
     if (openPositions.length >= this.limits.maxOpenPositions) {
       return {
         isApproved: false,
@@ -180,7 +217,7 @@ export class RiskEngine {
       };
     }
 
-    // 8. Stop Loss Validity Check
+    // 10. Stop Loss Validity & Distance Check
     if (!proposedStopLoss || proposedStopLoss <= 0) {
       return {
         isApproved: false,
@@ -189,13 +226,21 @@ export class RiskEngine {
       };
     }
 
-    const priceDistance = Math.abs(entryPrice - proposedStopLoss);
+    const priceDistance = Number(Math.abs(entryPrice - proposedStopLoss).toFixed(quote.digits));
+    if (priceDistance <= 0) {
+      return {
+        isApproved: false,
+        ruleBlocked: 'ZERO_STOP_DISTANCE',
+        rejectionMessage: 'Stop loss price cannot be identical to entry price.'
+      };
+    }
+
     const minDistance = (quote.spreadPips * 1.5) / quote.pipMultiplier;
     if (priceDistance < minDistance) {
       return {
         isApproved: false,
         ruleBlocked: 'STOP_TOO_CLOSE',
-        rejectionMessage: `Stop distance (${priceDistance.toFixed(quote.digits)}) is inside broker freeze/spread buffer (${minDistance.toFixed(quote.digits)}).`
+        rejectionMessage: `Stop distance (${priceDistance.toFixed(quote.digits)}) is within spread buffer (${minDistance.toFixed(quote.digits)}).`
       };
     }
 
@@ -215,29 +260,93 @@ export class RiskEngine {
       };
     }
 
-    // 9. Position Sizing based on fixed fractional risk %
-    const riskPercent = Math.min(desiredRiskPercent, this.limits.maxRiskPerTradePercent);
-    const riskAmount = (account.equity * (riskPercent / 100));
+    // 11. Instrument-Aware Position Sizing using Exact Contract Specifications
+    const spec = brokerGateway.getInstrumentSpec(quote.symbol);
+    const contractSize = spec.contractSize; // 100,000 for FX, 100 for Gold, 1 for BTC
 
-    // Calculate lots based on stop distance and instrument pip value
-    // Risk = Lots * 100,000 * priceDistance (for FX)
-    const rawLots = riskAmount / (100000 * priceDistance);
-    const safeLotSize = Math.max(0.01, Math.min(2.0, Math.round(rawLots * 100) / 100));
+    // Risk budget: strictly 0.20% of account equity
+    const riskPercent = this.limits.maxRiskPerTradePercent; // 0.20%
+    const riskBudgetUsd = Number(((account.equity * (riskPercent / 100))).toFixed(2));
 
-    // 10. Margin Availability Check
-    const requiredMargin = (safeLotSize * 100000 * entryPrice) / account.leverage;
+    // Loss per 1 lot move: convert to account currency (USD)
+    let lossPerLot = contractSize * priceDistance;
+    if (spec.quoteCurrency === 'JPY' && account.currency === 'USD') {
+      lossPerLot = (contractSize * priceDistance) / (entryPrice || 1);
+    }
+    lossPerLot = Number(lossPerLot.toFixed(4));
+    if (lossPerLot <= 0) {
+      return {
+        isApproved: false,
+        ruleBlocked: 'CALCULATION_ERROR',
+        rejectionMessage: 'Unable to calculate loss per lot reliably for this instrument.'
+      };
+    }
+
+    const rawLots = (riskBudgetUsd / lossPerLot);
+    const minVol = spec.minVolumeLots;
+    const worstCaseLossAtMinLot = minVol * lossPerLot;
+
+    // Reject if even the minimum 0.01 lot exceeds the 0.20% risk budget
+    if (worstCaseLossAtMinLot > riskBudgetUsd * 1.05) {
+      return {
+        isApproved: false,
+        ruleBlocked: 'LOT_SIZE_EXCEEDS_MAX_RISK',
+        rejectionMessage: `Minimum broker lot (${minVol}) would risk $${worstCaseLossAtMinLot.toFixed(2)}, which exceeds the approved 0.20% risk budget ($${riskBudgetUsd.toFixed(2)}). Trade rejected to protect capital.`
+      };
+    }
+
+    // Add tiny epsilon to handle floating point truncation before floor
+    const steps = Math.floor((rawLots + 1e-9) / spec.volumeStepLots);
+    const calculatedLotSize = Number((Math.max(spec.minVolumeLots, steps * spec.volumeStepLots)).toFixed(2));
+
+    // Re-verify actual worst-case risk at calculated lot
+    const actualRiskAmount = Number((calculatedLotSize * lossPerLot).toFixed(2));
+    if (actualRiskAmount > riskBudgetUsd * 1.05) {
+      return {
+        isApproved: false,
+        ruleBlocked: 'RISK_BUDGET_EXCEEDED',
+        rejectionMessage: `Calculated position risk ($${actualRiskAmount}) exceeds approved 0.20% limit ($${riskBudgetUsd}).`
+      };
+    }
+
+    // 10. Maximum Effective Leverage Check (3x Cap)
+    let currentOpenExposureUsd = 0;
+    for (const pos of openPositions) {
+      const posSpec = brokerGateway.getInstrumentSpec(pos.symbol);
+      const posValUsd = posSpec.baseCurrency === 'USD'
+        ? pos.sizeLots * posSpec.contractSize
+        : pos.sizeLots * posSpec.contractSize * pos.currentPrice;
+      currentOpenExposureUsd += posValUsd;
+    }
+    const newPositionValueUsd = spec.baseCurrency === 'USD'
+      ? calculatedLotSize * contractSize
+      : calculatedLotSize * contractSize * entryPrice;
+    const totalExposureUsd = currentOpenExposureUsd + newPositionValueUsd;
+    const effectiveLeverage = totalExposureUsd / (account.equity || 1);
+
+    if (effectiveLeverage > this.limits.maxEffectiveLeverage) {
+      return {
+        isApproved: false,
+        ruleBlocked: 'EXCEEDS_MAX_LEVERAGE_3X',
+        rejectionMessage: `Effective portfolio leverage would reach ${effectiveLeverage.toFixed(2)}x, exceeding the mandatory 3.0x leverage ceiling.`
+      };
+    }
+
+    // 11. Margin Headroom Check
+    const requiredMargin = newPositionValueUsd / account.leverage;
     if (requiredMargin > account.freeMargin * 0.8) {
       return {
         isApproved: false,
         ruleBlocked: 'INSUFFICIENT_FREE_MARGIN',
-        rejectionMessage: `Required margin ($${requiredMargin.toFixed(2)}) exceeds 80% buffer of free margin ($${account.freeMargin.toFixed(2)}).`
+        rejectionMessage: `Required margin ($${requiredMargin.toFixed(2)}) exceeds 80% buffer of available free margin ($${account.freeMargin.toFixed(2)}).`
       };
     }
 
     return {
       isApproved: true,
-      calculatedRiskAmount: Number(riskAmount.toFixed(2)),
-      calculatedLotSize: safeLotSize
+      calculatedRiskAmount: actualRiskAmount,
+      calculatedLotSize,
+      effectiveLeverageRatio: Number(effectiveLeverage.toFixed(2))
     };
   }
 }

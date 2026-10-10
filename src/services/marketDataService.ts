@@ -1,4 +1,5 @@
 import { Candle, FeedFreshness, MarketQuote, OperatingMode } from '../types/trading';
+import { XM_MT5_INSTRUMENT_SPECS } from './brokerGateway';
 
 export interface InstrumentConfig {
   symbol: string;
@@ -18,7 +19,7 @@ export const SUPPORTED_INSTRUMENTS: InstrumentConfig[] = [
     basePrice: 1.0850,
     digits: 5,
     pipMultiplier: 10000,
-    typicalSpreadPips: 1.1,
+    typicalSpreadPips: 1.2,
     volatilityPerTick: 0.00015,
     contractSize: 100000
   },
@@ -38,7 +39,7 @@ export const SUPPORTED_INSTRUMENTS: InstrumentConfig[] = [
     basePrice: 152.40,
     digits: 3,
     pipMultiplier: 100,
-    typicalSpreadPips: 1.4,
+    typicalSpreadPips: 1.5,
     volatilityPerTick: 0.035,
     contractSize: 100000
   },
@@ -48,9 +49,9 @@ export const SUPPORTED_INSTRUMENTS: InstrumentConfig[] = [
     basePrice: 2650.50,
     digits: 2,
     pipMultiplier: 10,
-    typicalSpreadPips: 2.5,
+    typicalSpreadPips: 2.8,
     volatilityPerTick: 0.45,
-    contractSize: 100
+    contractSize: 100 // 100 oz per lot
   },
   {
     symbol: 'BTC/USD',
@@ -58,9 +59,9 @@ export const SUPPORTED_INSTRUMENTS: InstrumentConfig[] = [
     basePrice: 87400.00,
     digits: 2,
     pipMultiplier: 1,
-    typicalSpreadPips: 4.0,
+    typicalSpreadPips: 4.5,
     volatilityPerTick: 15.0,
-    contractSize: 1
+    contractSize: 1 // 1 BTC per lot
   }
 ];
 
@@ -93,22 +94,19 @@ export class MarketDataService {
   }
 
   private updateFreshnessState() {
-    const freshness: FeedFreshness = this.isOffline
+    // STRICT TRUTH: Never claim broker-confirmed when generating local data
+    const freshness: FeedFreshness = this.isOffline || this.currentMode === 'disconnected'
       ? 'unavailable'
       : this.isDegraded
       ? 'stale'
-      : this.currentMode === 'live'
-      ? 'broker-confirmed'
-      : this.currentMode === 'demo'
-      ? 'delayed'
       : 'simulated';
 
     for (const [symbol, quote] of this.quotes.entries()) {
       const updatedQuote: MarketQuote = {
         ...quote,
         freshness,
-        isStale: this.isDegraded || this.isOffline,
-        latencyMs: this.isDegraded ? 850 : this.isOffline ? 9999 : Math.floor(Math.random() * 25) + 12
+        isStale: this.isDegraded || this.isOffline || this.currentMode === 'disconnected',
+        latencyMs: this.isDegraded ? 850 : this.isOffline ? 9999 : Math.floor(Math.random() * 20) + 10
       };
       this.quotes.set(symbol, updatedQuote);
       this.notifyListeners(updatedQuote);
@@ -118,18 +116,17 @@ export class MarketDataService {
   private initializeData() {
     const now = Date.now();
     for (const inst of SUPPORTED_INSTRUMENTS) {
-      // Generate 75 historical M15 candles
       const instCandles: Candle[] = [];
       let currentPrice = inst.basePrice;
       const intervalMs = 15 * 60 * 1000;
 
-      for (let i = 75; i >= 0; i--) {
+      for (let i = 80; i >= 0; i--) {
         const time = now - i * intervalMs;
-        const change = (Math.random() - 0.49) * (inst.volatilityPerTick * 10);
+        const change = (Math.random() - 0.49) * (inst.volatilityPerTick * 8);
         const open = currentPrice;
         const close = open + change;
-        const high = Math.max(open, close) + Math.random() * (inst.volatilityPerTick * 5);
-        const low = Math.min(open, close) - Math.random() * (inst.volatilityPerTick * 5);
+        const high = Math.max(open, close) + Math.random() * (inst.volatilityPerTick * 4);
+        const low = Math.min(open, close) - Math.random() * (inst.volatilityPerTick * 4);
         const volume = Math.floor(Math.random() * 500) + 120;
 
         instCandles.push({
@@ -145,7 +142,6 @@ export class MarketDataService {
 
       this.candles.set(inst.symbol, instCandles);
 
-      // Latest quote
       const lastCandle = instCandles[instCandles.length - 1];
       const spreadPips = inst.typicalSpreadPips;
       const halfSpread = (spreadPips / inst.pipMultiplier) / 2;
@@ -164,10 +160,10 @@ export class MarketDataService {
         change24hPercent: Number((((lastCandle.close - instCandles[0].open) / instCandles[0].open) * 100).toFixed(2)),
         digits: inst.digits,
         pipMultiplier: inst.pipMultiplier,
-        provider: 'LMAX / FastMatch Gateway (Normalized)',
+        provider: 'Local In-Memory Simulation (Paper Engine)',
         timestamp: now,
         freshness: 'simulated',
-        latencyMs: 18,
+        latencyMs: 14,
         isStale: false
       };
 
@@ -179,9 +175,8 @@ export class MarketDataService {
     if (this.intervalId) return;
 
     this.intervalId = setInterval(() => {
-      if (this.isOffline) return;
+      if (this.isOffline || this.currentMode === 'disconnected') return;
 
-      // Randomly update 1 or 2 instruments per tick
       const randomIndex = Math.floor(Math.random() * SUPPORTED_INSTRUMENTS.length);
       const inst = SUPPORTED_INSTRUMENTS[randomIndex];
       const currentQuote = this.quotes.get(inst.symbol);
@@ -192,12 +187,11 @@ export class MarketDataService {
       const drift = (Math.random() - 0.495) * inst.volatilityPerTick;
       const newLast = Number((currentQuote.last + drift).toFixed(inst.digits));
 
-      // Occasional spread jitter
       let currentSpread = inst.typicalSpreadPips;
       if (this.isDegraded) {
-        currentSpread = inst.typicalSpreadPips * 3.5; // Abnormal blowout
+        currentSpread = inst.typicalSpreadPips * 3.5;
       } else if (Math.random() < 0.15) {
-        currentSpread = Number((inst.typicalSpreadPips * (1 + Math.random() * 0.4)).toFixed(1));
+        currentSpread = Number((inst.typicalSpreadPips * (1 + Math.random() * 0.3)).toFixed(1));
       }
 
       const halfSpread = (currentSpread / inst.pipMultiplier) / 2;
@@ -211,18 +205,17 @@ export class MarketDataService {
         last: newLast,
         spreadPips: currentSpread,
         timestamp: Date.now(),
-        latencyMs: this.isDegraded ? 650 : Math.floor(Math.random() * 20) + 10
+        latencyMs: this.isDegraded ? 720 : Math.floor(Math.random() * 15) + 8
       };
 
       this.quotes.set(inst.symbol, updatedQuote);
 
-      // Update current candle
       const lastCandle = candlesList[candlesList.length - 1];
       if (lastCandle) {
         lastCandle.close = newLast;
         if (newLast > lastCandle.high) lastCandle.high = newLast;
         if (newLast < lastCandle.low) lastCandle.low = newLast;
-        lastCandle.volume += Math.floor(Math.random() * 5) + 1;
+        lastCandle.volume += Math.floor(Math.random() * 4) + 1;
       }
 
       this.notifyListeners(updatedQuote);

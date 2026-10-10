@@ -48,14 +48,12 @@ export const Header: React.FC<HeaderProps> = ({
 }) => {
   const getModeBadge = () => {
     switch (operatingMode) {
-      case 'live':
-        return { label: 'LIVE BROKER', bg: 'bg-red-500/20 text-red-400 border-red-500/40', dot: 'bg-red-500' };
-      case 'demo':
-        return { label: 'DEMO BROKER', bg: 'bg-blue-500/20 text-blue-400 border-blue-500/40', dot: 'bg-blue-500' };
+      case 'demo_pending':
+        return { label: 'MT5 BRIDGE DISCONNECTED', bg: 'bg-amber-500/20 text-amber-400 border-amber-500/40', dot: 'bg-amber-500' };
       case 'simulated':
-        return { label: 'SIMULATED / PAPER', bg: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40', dot: 'bg-emerald-500' };
+        return { label: 'LOCAL PAPER ENGINE', bg: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40', dot: 'bg-emerald-500' };
       case 'read_only':
-        return { label: 'READ ONLY', bg: 'bg-amber-500/20 text-amber-400 border-amber-500/40', dot: 'bg-amber-500' };
+        return { label: 'READ ONLY', bg: 'bg-sky-500/20 text-sky-400 border-sky-500/40', dot: 'bg-sky-500' };
       case 'disconnected':
       default:
         return { label: 'DISCONNECTED', bg: 'bg-slate-500/20 text-slate-400 border-slate-500/40', dot: 'bg-slate-500' };
@@ -64,17 +62,13 @@ export const Header: React.FC<HeaderProps> = ({
 
   const getFeedBadge = () => {
     switch (feedFreshness) {
-      case 'broker-confirmed':
-        return { label: 'Broker Confirmed', color: 'text-emerald-400' };
-      case 'delayed':
-        return { label: 'Delayed Feed', color: 'text-amber-400' };
       case 'stale':
         return { label: 'STALE DATA', color: 'text-rose-400' };
       case 'unavailable':
         return { label: 'FEED OFFLINE', color: 'text-red-500' };
       case 'simulated':
       default:
-        return { label: 'Simulated Feed', color: 'text-cyan-400' };
+        return { label: 'SYNTHETIC FEED (SIM)', color: 'text-amber-400' };
     }
   };
 

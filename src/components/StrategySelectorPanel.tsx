@@ -85,7 +85,7 @@ export const StrategySelectorPanel: React.FC<StrategySelectorPanelProps> = ({
                       </span>
                     </div>
                     <span className="text-[10px] text-slate-400 font-mono">
-                      Category: {strategyDef?.category} • Timeframe: {strategyDef?.timeframe}
+                      Category: {strategyDef?.category} • Timeframes: {strategyDef?.timeframes.join(', ')}
                     </span>
                   </div>
 
@@ -164,20 +164,10 @@ export const StrategySelectorPanel: React.FC<StrategySelectorPanelProps> = ({
                   )}
                 </div>
 
-                {/* Out of sample metrics footer */}
-                <div className="grid grid-cols-3 gap-2 text-[10px] font-mono text-slate-400 mb-3">
-                  <div>
-                    <span className="text-slate-400">OOS Sharpe:</span>
-                    <div className="text-slate-200 font-bold">{strategyDef?.outOfSampleSharpe}</div>
-                  </div>
-                  <div>
-                    <span className="text-slate-400">Win Rate:</span>
-                    <div className="text-slate-200 font-bold">{strategyDef?.winRate}%</div>
-                  </div>
-                  <div>
-                    <span className="text-slate-400">Max Hist DD:</span>
-                    <div className="text-slate-200 font-bold">{strategyDef?.maxHistoricalDrawdown}%</div>
-                  </div>
+                {/* Quantitative Governance Disclosure */}
+                <div className="p-2 rounded bg-slate-950 border border-slate-800/80 text-[10px] text-slate-400 font-mono mb-3">
+                  <span className="text-slate-500 block uppercase">Research Status:</span>
+                  <span className="text-purple-300">{strategyDef?.baselineEvidenceNote}</span>
                 </div>
               </div>
 

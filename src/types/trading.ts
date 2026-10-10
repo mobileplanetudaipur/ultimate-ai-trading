@@ -1,8 +1,8 @@
-// Domain types for Ultimate AI Trading Platform
+// Domain types for Ultimate AI Trading Platform (Truthful & Demo/Simulation Only)
 
-export type OperatingMode = 'disconnected' | 'read_only' | 'simulated' | 'demo' | 'live';
+export type OperatingMode = 'simulated' | 'read_only' | 'demo_pending' | 'disconnected';
 
-export type FeedFreshness = 'broker-confirmed' | 'simulated' | 'delayed' | 'stale' | 'unavailable';
+export type FeedFreshness = 'simulated' | 'stale' | 'unavailable';
 
 export interface MarketQuote {
   symbol: string;
@@ -16,7 +16,7 @@ export interface MarketQuote {
   change24hPercent: number;
   digits: number;
   pipMultiplier: number;
-  provider: string;
+  provider: string; // Truthful label e.g. "Local In-Memory Simulation"
   timestamp: number;
   freshness: FeedFreshness;
   latencyMs: number;
@@ -30,6 +30,25 @@ export interface Candle {
   low: number;
   close: number;
   volume: number;
+}
+
+export interface InstrumentSpecification {
+  symbol: string;
+  displayName: string;
+  assetClass: 'FOREX' | 'COMMODITY' | 'CRYPTO';
+  baseCurrency: string;
+  quoteCurrency: string;
+  contractSize: number; // e.g. 100,000 for FX, 100 for XAU/USD, 1 for BTC/USD
+  tickSize: number;
+  tickValue: number;
+  digits: number;
+  pipMultiplier: number;
+  minVolumeLots: number;
+  maxVolumeLots: number;
+  volumeStepLots: number;
+  typicalSpreadPips: number;
+  marginCurrency: string;
+  tradingHours: string;
 }
 
 export interface MarketRegime {
@@ -47,17 +66,14 @@ export interface MarketRegime {
 export interface StrategyDefinition {
   id: string;
   name: string;
-  category: 'Trend Following' | 'Mean Reversion' | 'Volatility Breakout' | 'Liquidity Sweep';
+  category: 'Trend Following' | 'Multi-Timeframe' | 'Breakout' | 'Liquidity Sweep' | 'Mean Reversion';
   targetSymbol: string;
-  timeframe: 'M5' | 'M15' | 'H1' | 'H4';
+  timeframes: string[];
   description: string;
   invalidationRules: string;
   holdingTimeExpected: string;
-  historicalSampleSize: number;
-  outOfSampleSharpe: number;
-  winRate: number;
-  profitFactor: number;
-  maxHistoricalDrawdown: number;
+  researchStatus: 'HYPOTHESIS_PENDING_OUT_OF_SAMPLE' | 'WALK_FORWARD_VALIDATION' | 'RESEARCH_ONLY';
+  baselineEvidenceNote: string;
 }
 
 export interface StrategyEvaluation {
@@ -80,14 +96,11 @@ export interface StrategyEvaluation {
 export type OrderStatus =
   | 'PREPARED'
   | 'RISK_APPROVED'
-  | 'SUBMITTED'
-  | 'ACKNOWLEDGED'
-  | 'PARTIALLY_FILLED'
-  | 'FILLED'
+  | 'SUBMITTED_LOCAL'
+  | 'SIMULATED_FILL'
   | 'REJECTED'
   | 'CANCELLED'
-  | 'EXPIRED'
-  | 'OUTCOME_UNKNOWN';
+  | 'EXPIRED';
 
 export interface OrderRecord {
   id: string;
@@ -96,8 +109,8 @@ export interface OrderRecord {
   symbol: string;
   side: 'BUY' | 'SELL';
   orderType: 'MARKET' | 'LIMIT' | 'STOP';
-  requestedSize: number; // lots
-  filledSize: number;
+  requestedSizeLots: number;
+  filledSizeLots: number;
   requestedPrice: number;
   executedPrice?: number;
   slippagePips?: number;
@@ -109,7 +122,7 @@ export interface OrderRecord {
   strategyId: string;
   createdAt: number;
   updatedAt: number;
-  brokerConfirmationToken?: string;
+  isSimulatedOrder: boolean;
 }
 
 export interface PositionRecord {
@@ -128,7 +141,7 @@ export interface PositionRecord {
   realizedPnl: number;
   commission: number;
   swap: number;
-  brokerConfirmed: boolean;
+  brokerConfirmed: false; // Strictly false in simulation
   openedAt: number;
   strategyId: string;
 }
@@ -160,20 +173,21 @@ export interface AccountState {
   freeMargin: number;
   marginLevelPercent: number;
   leverage: number;
-  brokerConfirmed: boolean;
+  brokerConfirmed: false; // Always false in simulated mode
   lastReconciledAt: number;
-  reconciliationStatus: 'IN_SYNC' | 'DISCREPANCY_DETECTED' | 'RECONCILING';
+  reconciliationStatus: 'LOCAL_CONSISTENT' | 'DISCREPANCY_DETECTED' | 'BROKER_GATEWAY_DISCONNECTED';
   discrepancies: string[];
 }
 
 export interface RiskLimits {
-  maxRiskPerTradePercent: number; // Default 1.0%
-  maxTotalExposurePercent: number; // Default 5.0%
-  dailyLossLimitPercent: number; // Default 3.0%
-  maxDrawdownPercent: number; // Default 6.0%
-  maxOpenPositions: number; // Default 3
-  consecutiveLossLockoutThreshold: number; // Default 5 losses -> 30m lock
-  cooldownPeriodMinutes: number; // 30m
+  maxRiskPerTradePercent: number; // Baseline: 0.20% of reference equity
+  dailyLossLimitPercent: number; // Baseline: 1.00% of daily reference equity
+  maxOverallDrawdownPercent: number; // Baseline: 5.00% of account equity
+  maxOpenPositions: number; // Baseline: 3 maximum simultaneous positions
+  maxDailyTrades: number; // Baseline: 8 trades per day maximum
+  consecutiveLossLockoutThreshold: number; // Baseline: 5 consecutive net losses
+  cooldownPeriodMinutes: number; // Baseline: 30 minutes lockout
+  maxEffectiveLeverage: number; // Baseline: 3x maximum effective portfolio leverage
   enforceWeekendClosure: boolean;
   enforceNewsBlackout: boolean;
 }
@@ -186,9 +200,10 @@ export interface RiskStatus {
   cooldownEndsAt?: number;
   dailyStartingEquity: number;
   todayRealizedPnl: number;
+  todayTradesCount: number;
   todayDrawdownPercent: number;
   dailyLossLimitBreached: boolean;
-  overallMaxDrawdownBreached: boolean;
+  dailyTradeCapBreached: boolean;
   killSwitchTriggered: boolean;
   killSwitchTriggeredAt?: number;
 }
@@ -202,6 +217,7 @@ export interface EconomicEvent {
   forecast?: string;
   previous?: string;
   actual?: string;
+  isSyntheticTestScenario: boolean;
 }
 
 export interface AuditLogEntry {
@@ -211,7 +227,7 @@ export interface AuditLogEntry {
   level: 'INFO' | 'WARN' | 'ERROR' | 'SECURITY';
   message: string;
   details?: Record<string, any>;
-  actor: 'AUTOMATED_AGENT' | 'OPERATOR' | 'RISK_ENGINE' | 'BROKER_GATEWAY';
+  actor: 'LOCAL_SIMULATOR' | 'OPERATOR' | 'RISK_ENGINE' | 'STRATEGY_ENGINE';
 }
 
 export interface ExecutionMetrics {

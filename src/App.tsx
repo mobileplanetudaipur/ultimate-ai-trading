@@ -6,7 +6,6 @@ import {
   EconomicEvent,
   FeedFreshness,
   MarketQuote,
-  MarketRegime,
   OperatingMode,
   OrderRecord,
   PositionRecord,
@@ -21,30 +20,37 @@ import { orderManager } from './services/orderLifecycleManager';
 import { economicCalendarService } from './services/economicCalendarService';
 import { calculateExecutionMetrics } from './services/metricsCalculator';
 import { checkpointService, DurableCheckpoint } from './services/storageCheckpoint';
+import { brokerGateway } from './services/brokerGateway';
 
-import { Header } from './components/Header';
-import { MarketOverview } from './components/MarketOverview';
-import { MarketChart } from './components/MarketChart';
-import { StrategySelectorPanel } from './components/StrategySelectorPanel';
-import { RiskControllerPanel } from './components/RiskControllerPanel';
-import { PositionsOrdersTable } from './components/PositionsOrdersTable';
+import { NavigationSidebar, ActiveNavTab } from './components/NavigationSidebar';
+import { TopBar } from './components/TopBar';
+import { OverviewView } from './views/OverviewView';
+import { MarketsView } from './views/MarketsView';
+import { StrategiesView } from './views/StrategiesView';
+import { PortfolioView } from './views/PortfolioView';
+import { RiskCenterView } from './views/RiskCenterView';
+import { ResearchBacktestsView } from './views/ResearchBacktestsView';
+import { ShadowDemoView } from './views/ShadowDemoView';
+import { CalendarContextView } from './views/CalendarContextView';
+import { AuditRecoveryView } from './views/AuditRecoveryView';
+import { ConnectionsSettingsView } from './views/ConnectionsSettingsView';
+
 import { ModeSelectorModal } from './components/ModeSelectorModal';
-import { ReconciliationModal } from './components/ReconciliationModal';
-import { ExecutionQualityModal } from './components/ExecutionQualityModal';
-import { EconomicCalendarModal } from './components/EconomicCalendarModal';
-import { AuditLogDrawer } from './components/AuditLogDrawer';
 import { KillSwitchModal } from './components/KillSwitchModal';
 import { CheckpointModal } from './components/CheckpointModal';
 import { AlertCircle, CheckCircle, Info, ShieldAlert } from 'lucide-react';
 
 export const App: React.FC = () => {
-  // 1. Operating State
+  // Navigation State
+  const [activeTab, setActiveTab] = useState<ActiveNavTab>('overview');
+
+  // Operating State
   const [operatingMode, setOperatingMode] = useState<OperatingMode>('simulated');
   const [selectedSymbol, setSelectedSymbol] = useState<string>('EUR/USD');
   const [quotes, setQuotes] = useState<MarketQuote[]>([]);
   const [isFeedDegraded, setIsFeedDegraded] = useState<boolean>(false);
 
-  // 2. Account & Portfolio State
+  // Account State (Truthful: strictly unconfirmed paper balance)
   const [account, setAccount] = useState<AccountState>({
     currency: 'USD',
     balance: 10000.0,
@@ -53,34 +59,30 @@ export const App: React.FC = () => {
     freeMargin: 10000.0,
     marginLevelPercent: 9999.0,
     leverage: 100,
-    brokerConfirmed: true,
+    brokerConfirmed: false, // Strictly false in paper mode
     lastReconciledAt: Date.now(),
-    reconciliationStatus: 'IN_SYNC',
+    reconciliationStatus: 'BROKER_GATEWAY_DISCONNECTED',
     discrepancies: []
   });
 
-  // 3. Risk State
+  // Risk State
   const [riskLimits, setRiskLimits] = useState<RiskLimits>(riskEngine.getLimits());
   const [riskStatus, setRiskStatus] = useState<RiskStatus>(riskEngine.getStatus());
 
-  // 4. Orders, Positions, and History
+  // Orders, Positions, and History
   const [positions, setPositions] = useState<PositionRecord[]>([]);
   const [orders, setOrders] = useState<OrderRecord[]>([]);
   const [closedTrades, setClosedTrades] = useState<ClosedTradeRecord[]>([]);
 
-  // 5. Macro Events & Audit Trail
+  // Macro Events & Audit Trail
   const [economicEvents, setEconomicEvents] = useState<EconomicEvent[]>(
     economicCalendarService.getUpcomingEvents()
   );
   const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
   const [savedCheckpoint, setSavedCheckpoint] = useState<DurableCheckpoint | null>(null);
 
-  // 6. UI Modals
+  // Modals & Notifications
   const [isModeModalOpen, setIsModeModalOpen] = useState(false);
-  const [isReconModalOpen, setIsReconModalOpen] = useState(false);
-  const [isMetricsModalOpen, setIsMetricsModalOpen] = useState(false);
-  const [isCalendarModalOpen, setIsCalendarModalOpen] = useState(false);
-  const [isAuditDrawerOpen, setIsAuditDrawerOpen] = useState(false);
   const [isKillSwitchModalOpen, setIsKillSwitchModalOpen] = useState(false);
   const [isCheckpointModalOpen, setIsCheckpointModalOpen] = useState(false);
   const [bannerNotice, setBannerNotice] = useState<{ type: 'error' | 'success' | 'info'; text: string } | null>(null);
@@ -91,7 +93,7 @@ export const App: React.FC = () => {
     level: AuditLogEntry['level'],
     message: string,
     details?: any,
-    actor: AuditLogEntry['actor'] = 'AUTOMATED_AGENT'
+    actor: AuditLogEntry['actor'] = 'LOCAL_SIMULATOR'
   ) => {
     const entry: AuditLogEntry = {
       id: 'log_' + Math.random().toString(36).substring(2, 9),
@@ -105,7 +107,6 @@ export const App: React.FC = () => {
     setAuditLogs(prev => [...prev.slice(-150), entry]);
   }, []);
 
-  // Show auto-expiring notification banner
   const showNotice = (text: string, type: 'error' | 'success' | 'info' = 'info') => {
     setBannerNotice({ text, type });
     setTimeout(() => {
@@ -118,26 +119,21 @@ export const App: React.FC = () => {
     marketDataService.startTickStream();
     setQuotes(marketDataService.getAllQuotes());
 
-    // Load any existing durable checkpoint
     const chk = checkpointService.loadCheckpoint();
     if (chk) {
       setSavedCheckpoint(chk);
-      logAudit('SYSTEM', 'INFO', `Durable checkpoint ${chk.checkpointId} discovered in persistent storage.`, {
-        milestone: chk.milestonePhase
-      });
+      logAudit('SYSTEM', 'INFO', `Local checkpoint ${chk.checkpointId} discovered in browser storage.`, undefined, 'OPERATOR');
     } else {
-      logAudit('SYSTEM', 'INFO', 'System initialized in Simulated / Paper mode. All deterministic safety gates active.', {
+      logAudit('SYSTEM', 'INFO', 'System initialized in Local Paper Simulation Mode. Strict 0.20% risk gate active.', {
         equity: 10000,
         mode: 'simulated'
       });
     }
 
-    // Subscribe to market ticks
     const unsubscribe = marketDataService.subscribe(updatedQuote => {
       setQuotes(marketDataService.getAllQuotes());
 
-      // Update positions with incoming price tick
-      const { closedTrades: newlyClosed, modifiedPositions } = orderManager.updatePositionsWithQuote(updatedQuote);
+      const { closedTrades: newlyClosed } = orderManager.updatePositionsWithQuote(updatedQuote);
 
       if (newlyClosed.length > 0) {
         for (const t of newlyClosed) {
@@ -145,7 +141,7 @@ export const App: React.FC = () => {
           logAudit(
             'ORDER',
             t.netPnl >= 0 ? 'INFO' : 'WARN',
-            `Position ${t.positionId} closed via ${t.exitReason}. Realized P&L: $${t.netPnl.toFixed(2)}`,
+            `Paper position ${t.positionId} closed via ${t.exitReason}. Realized: $${t.netPnl.toFixed(2)}`,
             { trade: t }
           );
         }
@@ -162,13 +158,14 @@ export const App: React.FC = () => {
     };
   }, [logAudit]);
 
-  // Recalculate equity and margins whenever positions update
+  // Recalculate equity and margins when positions change
   useEffect(() => {
     let marginUsed = 0;
     let totalUnrealized = 0;
 
     for (const pos of positions) {
-      marginUsed += (pos.sizeLots * 100000 * pos.entryPrice) / account.leverage;
+      const spec = brokerGateway.getInstrumentSpec(pos.symbol);
+      marginUsed += (pos.sizeLots * spec.contractSize * pos.entryPrice) / account.leverage;
       totalUnrealized += pos.unrealizedPnl;
     }
 
@@ -185,12 +182,11 @@ export const App: React.FC = () => {
     }));
   }, [positions, account.balance, account.leverage]);
 
-  // Current quote and candles for selected symbol
   const activeQuote = quotes.find(q => q.symbol === selectedSymbol) || quotes[0] || {
     symbol: 'EUR/USD',
     bid: 1.0850,
     ask: 1.0851,
-    spreadPips: 1.1,
+    spreadPips: 1.2,
     last: 1.08505,
     high24h: 1.0880,
     low24h: 1.0820,
@@ -198,16 +194,15 @@ export const App: React.FC = () => {
     change24hPercent: 0.12,
     digits: 5,
     pipMultiplier: 10000,
-    provider: 'LMAX / FastMatch Gateway',
+    provider: 'Local In-Memory Simulation',
     timestamp: Date.now(),
     freshness: 'simulated',
-    latencyMs: 18,
+    latencyMs: 14,
     isStale: false
   };
 
   const activeCandles = marketDataService.getCandles(activeQuote.symbol);
 
-  // Evaluate Market Regime and Strategies
   const marketRegime = strategyEngine.evaluateMarketRegime(
     activeQuote,
     activeCandles,
@@ -220,7 +215,7 @@ export const App: React.FC = () => {
     marketRegime
   );
 
-  // Execute Signal proposal via Risk Engine
+  // Execute Signal proposal through Deterministic Risk Gate
   const handleExecuteSignal = async (evaluation: StrategyEvaluation) => {
     if (evaluation.signal === 'NO_TRADE') {
       showNotice(`Cannot execute: Strategy returned NO TRADE: ${evaluation.noTradeReason}`, 'error');
@@ -232,7 +227,7 @@ export const App: React.FC = () => {
     const proposedTp = evaluation.proposedTakeProfit || (proposedSide === 'BUY' ? activeQuote.ask + 0.0050 : activeQuote.bid - 0.0050);
     const entryEstimate = proposedSide === 'BUY' ? activeQuote.ask : activeQuote.bid;
 
-    // 1. Stage 8 Deterministic Risk Gate Check
+    // Phase 3 Deterministic Risk Gate Check
     const validation = riskEngine.validateOrderProposal(
       activeQuote,
       account,
@@ -240,12 +235,11 @@ export const App: React.FC = () => {
       orders,
       proposedSide,
       proposedStop,
-      entryEstimate,
-      1.0
+      entryEstimate
     );
 
     if (!validation.isApproved) {
-      logAudit('RISK', 'WARN', `Stage 8 Deterministic Risk Block: Order rejected [${validation.ruleBlocked}]`, {
+      logAudit('RISK', 'WARN', `Phase 3 Risk Gate Blocked Order [${validation.ruleBlocked}]`, {
         reason: validation.rejectionMessage,
         strategy: evaluation.strategyName
       }, 'RISK_ENGINE');
@@ -253,17 +247,17 @@ export const App: React.FC = () => {
       return;
     }
 
-    // 2. Stage 5 Multistage Order Submission
-    const clientOrderId = 'cli_' + Math.random().toString(36).substring(2, 8);
+    // Phase 4 Local Paper Order Submission
+    const clientOrderId = 'paper_cli_' + Math.random().toString(36).substring(2, 8);
     const idempotencyKey = 'idem_' + Date.now().toString(36) + '_' + evaluation.strategyId;
 
     try {
-      const { order, position } = await orderManager.submitOrder({
+      const { order } = await orderManager.submitOrder({
         clientOrderId,
         idempotencyKey,
         symbol: activeQuote.symbol,
         side: proposedSide,
-        sizeLots: validation.calculatedLotSize || 0.1,
+        sizeLots: validation.calculatedLotSize || 0.01,
         requestedPrice: entryEstimate,
         stopLossPrice: proposedStop,
         takeProfitPrice: proposedTp,
@@ -276,22 +270,21 @@ export const App: React.FC = () => {
       setOrders([...orderManager.getOrders()]);
       setPositions([...orderManager.getPositions()]);
 
-      logAudit('ORDER', 'INFO', `Order ${order.id} FILLED for ${order.requestedSize} lots ${order.side} ${order.symbol} @ ${order.executedPrice}`, {
+      logAudit('ORDER', 'INFO', `Paper Order ${order.id} executed for ${order.requestedSizeLots} lots ${order.side} ${order.symbol} @ ${order.executedPrice}`, {
         orderId: order.id,
         idempotencyKey,
         stopLoss: proposedStop,
         takeProfit: proposedTp,
-        riskAllocated: validation.calculatedRiskAmount
+        riskAllocatedUsd: validation.calculatedRiskAmount
       });
 
-      showNotice(`Order ${order.id} executed successfully. Position opened at ${order.executedPrice}.`, 'success');
+      showNotice(`Paper Order ${order.id} executed. ${order.requestedSizeLots}L ${order.symbol} @ ${order.executedPrice}.`, 'success');
     } catch (err: any) {
       logAudit('ORDER', 'ERROR', `Order submission failed: ${err.message}`, { clientOrderId });
       showNotice(`Order submission error: ${err.message}`, 'error');
     }
   };
 
-  // Close single position manually
   const handleClosePosition = (positionId: string) => {
     const closed = orderManager.closePosition(positionId, activeQuote, 'MANUAL_CLOSE');
     if (closed) {
@@ -299,21 +292,19 @@ export const App: React.FC = () => {
       setClosedTrades([...orderManager.getClosedTrades()]);
       setPositions([...orderManager.getPositions()]);
       setRiskStatus(riskEngine.getStatus());
-      logAudit('ORDER', 'INFO', `Position ${positionId} manually closed by operator. Realized P&L: $${closed.netPnl.toFixed(2)}`, { trade: closed }, 'OPERATOR');
+      logAudit('ORDER', 'INFO', `Paper position ${positionId} manually closed. Realized P&L: $${closed.netPnl.toFixed(2)}`, { trade: closed }, 'OPERATOR');
       showNotice(`Position ${positionId} closed. Realized: $${closed.netPnl.toFixed(2)}`, 'info');
     }
   };
 
-  // Toggle Trailing Stop
   const handleToggleTrailingStop = (positionId: string) => {
     const ok = orderManager.toggleTrailingStop(positionId, 20);
     if (ok) {
       setPositions([...orderManager.getPositions()]);
-      logAudit('ORDER', 'INFO', `Stage 10 Stop Policy updated for position ${positionId}: Trailing Stop toggled.`, undefined, 'OPERATOR');
+      logAudit('ORDER', 'INFO', `Stop Policy updated for position ${positionId}: Trailing Stop toggled.`, undefined, 'OPERATOR');
     }
   };
 
-  // Emergency Kill Switch
   const handleConfirmKillSwitch = (closePositionsImmediately: boolean) => {
     riskEngine.triggerKillSwitch();
     setRiskStatus(riskEngine.getStatus());
@@ -329,22 +320,20 @@ export const App: React.FC = () => {
       setClosedTrades([...orderManager.getClosedTrades()]);
     }
 
-    logAudit('KILL_SWITCH', 'SECURITY', `Emergency Kill Switch Triggered. All automated entries halted. ${closedCount} positions closed at market.`, {
+    logAudit('KILL_SWITCH', 'SECURITY', `Emergency Halt Triggered. All automated entries blocked. ${closedCount} positions closed.`, {
       closedPositionsCount: closedCount
     }, 'OPERATOR');
 
-    showNotice(`EMERGENCY KILL SWITCH ACTIVATED. System locked. ${closedCount} position(s) closed.`, 'error');
+    showNotice(`EMERGENCY HALT ACTIVATED. System locked. ${closedCount} position(s) closed.`, 'error');
   };
 
-  // Reset Kill Switch
   const handleResetKillSwitch = () => {
     riskEngine.resetKillSwitch();
     setRiskStatus(riskEngine.getStatus());
-    logAudit('KILL_SWITCH', 'INFO', 'Emergency Kill Switch reset by authorized operator. Automated trading allowed.', undefined, 'OPERATOR');
-    showNotice('Emergency Kill Switch has been reset. Automated trading eligible.', 'success');
+    logAudit('KILL_SWITCH', 'INFO', 'Emergency Halt reset by authorized operator. Trading eligible.', undefined, 'OPERATOR');
+    showNotice('Emergency Halt has been reset. Automated trading eligible.', 'success');
   };
 
-  // Toggle Pause
   const handleTogglePause = () => {
     const nextPaused = !riskStatus.isTradingPaused;
     riskEngine.setTradingPaused(nextPaused, nextPaused ? 'Paused by Operator' : undefined);
@@ -352,28 +341,19 @@ export const App: React.FC = () => {
     logAudit('SYSTEM', 'INFO', nextPaused ? 'Automated entries paused by operator.' : 'Automated entries resumed.', undefined, 'OPERATOR');
   };
 
-  // Simulate loss to test Stage 9 Consecutive Loss Rule
   const handleSimulateLoss = () => {
-    riskEngine.recordCompletedTrade(-65.0);
+    riskEngine.recordCompletedTrade(-20.0); // 0.20% loss test
     setRiskStatus(riskEngine.getStatus());
-    logAudit('RISK', 'WARN', 'Test simulated loss recorded (-$65.00) to verify Stage 9 behavioral lockout threshold.', undefined, 'OPERATOR');
+    logAudit('RISK', 'WARN', 'Test simulated loss recorded (-$20.00) to test 5-loss lockout counter.', undefined, 'OPERATOR');
   };
 
-  const handleResetCooldown = () => {
-    riskEngine.recordCompletedTrade(10.0); // Reset consecutive counter
-    setRiskStatus(riskEngine.getStatus());
-    logAudit('RISK', 'INFO', 'Consecutive loss lockout reset by operator override.', undefined, 'OPERATOR');
-  };
-
-  // Toggle feed degradation
   const handleToggleDataDegradation = () => {
     const nextDegraded = !isFeedDegraded;
     setIsFeedDegraded(nextDegraded);
     marketDataService.setDegradedState(nextDegraded);
-    logAudit('SYSTEM', nextDegraded ? 'WARN' : 'INFO', nextDegraded ? 'Data feed degradation SIMULATED (stale quotes, spread blowout).' : 'Data feed restored to normal telemetry.', undefined, 'OPERATOR');
+    logAudit('SYSTEM', nextDegraded ? 'WARN' : 'INFO', nextDegraded ? 'Data feed degradation SIMULATED (stale quotes).' : 'Data feed restored to normal.', undefined, 'OPERATOR');
   };
 
-  // Save durable checkpoint
   const handleSaveCurrentCheckpoint = () => {
     const chk = checkpointService.saveCheckpoint({
       operatingMode,
@@ -385,11 +365,10 @@ export const App: React.FC = () => {
       auditLogs
     });
     setSavedCheckpoint(chk);
-    logAudit('SYSTEM', 'INFO', `Durable checkpoint saved: ${chk.checkpointId}`, { timestamp: chk.timestamp }, 'OPERATOR');
-    showNotice(`Durable checkpoint ${chk.checkpointId} saved to persistent storage.`, 'success');
+    logAudit('SYSTEM', 'INFO', `Local checkpoint saved: ${chk.checkpointId}`, { timestamp: chk.timestamp }, 'OPERATOR');
+    showNotice(`Local checkpoint ${chk.checkpointId} saved to browser storage.`, 'success');
   };
 
-  // Restore checkpoint
   const handleRestoreCheckpoint = () => {
     if (!savedCheckpoint) return;
     setOperatingMode(savedCheckpoint.operatingMode);
@@ -399,113 +378,165 @@ export const App: React.FC = () => {
     setOrders([...orderManager.getOrders()]);
     setClosedTrades([...orderManager.getClosedTrades()]);
     setIsCheckpointModalOpen(false);
-    logAudit('SYSTEM', 'INFO', `Durable checkpoint ${savedCheckpoint.checkpointId} restored successfully.`, undefined, 'OPERATOR');
-    showNotice('System restored from durable checkpoint.', 'success');
+    logAudit('SYSTEM', 'INFO', `Checkpoint ${savedCheckpoint.checkpointId} restored successfully.`, undefined, 'OPERATOR');
+    showNotice('System restored from checkpoint.', 'success');
   };
 
   const executionMetrics = calculateExecutionMetrics(closedTrades, orders);
 
-  // Total exposure percent calculation
-  const totalExposurePercent = positions.reduce((sum, p) => sum + 1.0, 0);
+  const getViewTitle = () => {
+    switch (activeTab) {
+      case 'overview': return 'Executive Overview';
+      case 'markets': return 'Markets & Live Telemetry';
+      case 'strategies': return 'Strategies & Multi-Regime Signals';
+      case 'portfolio': return 'Portfolio & Order Lifecycle';
+      case 'risk': return 'Deterministic Risk Center';
+      case 'research': return 'Research & Backtest Governance';
+      case 'shadow': return 'Shadow Mode & MT5 Bridge';
+      case 'calendar': return 'Macroeconomic Blackout Calendar';
+      case 'audit': return 'Operational Audit & Checkpoints';
+      case 'settings': return 'Bridge Connections & Settings';
+    }
+  };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
-      {/* Top Header */}
-      <Header
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex font-sans antialiased">
+      {/* Sleek Apple-inspired Navigation Sidebar */}
+      <NavigationSidebar
+        activeTab={activeTab}
+        onSelectTab={setActiveTab}
         operatingMode={operatingMode}
-        account={account}
         riskStatus={riskStatus}
-        feedFreshness={activeQuote.freshness}
-        feedLatencyMs={activeQuote.latencyMs}
-        onOpenModeSelector={() => setIsModeModalOpen(true)}
-        onOpenReconciliation={() => setIsReconModalOpen(true)}
-        onOpenMetrics={() => setIsMetricsModalOpen(true)}
-        onOpenCalendar={() => setIsCalendarModalOpen(true)}
-        onOpenAuditLogs={() => setIsAuditDrawerOpen(true)}
-        onTriggerKillSwitch={() => setIsKillSwitchModalOpen(true)}
-        onTogglePause={handleTogglePause}
-        onSaveCheckpoint={() => setIsCheckpointModalOpen(true)}
+        openPositionsCount={positions.length}
       />
 
-      {/* Floating Notification Toast */}
-      {bannerNotice && (
-        <div className={`fixed bottom-5 right-5 z-50 max-w-md px-4 py-3 rounded-lg shadow-2xl border text-xs font-medium flex items-start gap-2.5 backdrop-blur-md transition-all ${
-          bannerNotice.type === 'error'
-            ? 'bg-rose-950/90 border-rose-500/50 text-rose-200'
-            : bannerNotice.type === 'success'
-            ? 'bg-emerald-950/90 border-emerald-500/50 text-emerald-200'
-            : 'bg-slate-900/90 border-slate-700 text-slate-200'
-        }`}>
-          {bannerNotice.type === 'error' ? (
-            <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
-          ) : bannerNotice.type === 'success' ? (
-            <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-          ) : (
-            <Info className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
+      {/* Main Workspace Frame */}
+      <div className="flex-1 flex flex-col min-w-0 overflow-y-auto">
+        <TopBar
+          activeViewTitle={getViewTitle()}
+          account={account}
+          riskStatus={riskStatus}
+          feedLatencyMs={activeQuote.latencyMs}
+          onTriggerKillSwitch={() => setIsKillSwitchModalOpen(true)}
+          onTogglePause={handleTogglePause}
+        />
+
+        {/* Floating Notification Toast */}
+        {bannerNotice && (
+          <div className={`fixed bottom-5 right-5 z-50 max-w-md px-4 py-3 rounded-xl shadow-2xl border text-xs font-medium flex items-start gap-2.5 backdrop-blur-md transition-all ${
+            bannerNotice.type === 'error'
+              ? 'bg-rose-950/90 border-rose-500/50 text-rose-200'
+              : bannerNotice.type === 'success'
+              ? 'bg-emerald-950/90 border-emerald-500/50 text-emerald-200'
+              : 'bg-slate-900/90 border-slate-700 text-slate-200'
+          }`}>
+            {bannerNotice.type === 'error' ? (
+              <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+            ) : bannerNotice.type === 'success' ? (
+              <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+            ) : (
+              <Info className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
+            )}
+            <div className="flex-1 leading-snug">{bannerNotice.text}</div>
+          </div>
+        )}
+
+        {/* View Routing */}
+        <main className="flex-1 max-w-7xl w-full mx-auto p-6 space-y-6">
+          {activeTab === 'overview' && (
+            <OverviewView
+              account={account}
+              riskStatus={riskStatus}
+              riskLimits={riskLimits}
+              positions={positions}
+              strategyEvaluations={strategyEvaluations}
+              auditLogs={auditLogs}
+              onNavigateTab={setActiveTab}
+            />
           )}
-          <div className="flex-1 leading-snug">{bannerNotice.text}</div>
-        </div>
-      )}
 
-      {/* Main Trading Cockpit */}
-      <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 space-y-5">
-        {/* Market Overview Ticker & Environmental Regime */}
-        <MarketOverview
-          quotes={quotes}
-          selectedSymbol={selectedSymbol}
-          onSelectSymbol={setSelectedSymbol}
-          regime={marketRegime}
-          feedFreshness={activeQuote.freshness}
-          onToggleDataDegradation={handleToggleDataDegradation}
-          isDegraded={isFeedDegraded}
-        />
+          {activeTab === 'markets' && (
+            <MarketsView
+              quotes={quotes}
+              selectedSymbol={selectedSymbol}
+              onSelectSymbol={setSelectedSymbol}
+              candles={activeCandles}
+              positions={positions}
+              regime={marketRegime}
+              feedFreshness={activeQuote.freshness}
+              onToggleDataDegradation={handleToggleDataDegradation}
+              isDegraded={isFeedDegraded}
+            />
+          )}
 
-        {/* Live Candlestick & Indicator Chart */}
-        <MarketChart
-          symbol={selectedSymbol}
-          quote={activeQuote}
-          candles={activeCandles}
-          positions={positions}
-        />
+          {activeTab === 'strategies' && (
+            <StrategiesView
+              strategyEvaluations={strategyEvaluations}
+              onExecuteSignal={handleExecuteSignal}
+              isTradingPaused={riskStatus.isTradingPaused}
+              isCooldownActive={riskStatus.isCooldownActive}
+              killSwitchActive={riskStatus.killSwitchTriggered}
+            />
+          )}
 
-        {/* Strategy Selector with Transparent Abstention ("NO TRADE") */}
-        <StrategySelectorPanel
-          evaluations={strategyEvaluations}
-          onExecuteSignal={handleExecuteSignal}
-          isTradingPaused={riskStatus.isTradingPaused}
-          isCooldownActive={riskStatus.isCooldownActive}
-          killSwitchActive={riskStatus.killSwitchTriggered}
-        />
+          {activeTab === 'portfolio' && (
+            <PortfolioView
+              positions={positions}
+              orders={orders}
+              closedTrades={closedTrades}
+              onClosePosition={handleClosePosition}
+              onToggleTrailingStop={handleToggleTrailingStop}
+            />
+          )}
 
-        {/* Deterministic Portfolio Risk Engine & Behavioral Safeguards */}
-        <RiskControllerPanel
-          limits={riskLimits}
-          status={riskStatus}
-          openPositionsCount={positions.length}
-          totalExposurePercent={totalExposurePercent}
-          onSimulateLoss={handleSimulateLoss}
-          onResetCooldown={handleResetCooldown}
-        />
+          {activeTab === 'risk' && (
+            <RiskCenterView
+              limits={riskLimits}
+              status={riskStatus}
+              account={account}
+              quotes={quotes}
+              positions={positions}
+              onSimulateLoss={handleSimulateLoss}
+            />
+          )}
 
-        {/* Positions, Order Lifecycle Tracker & Realized History */}
-        <PositionsOrdersTable
-          positions={positions}
-          orders={orders}
-          closedTrades={closedTrades}
-          onClosePosition={handleClosePosition}
-          onToggleTrailingStop={handleToggleTrailingStop}
-        />
-      </main>
+          {activeTab === 'research' && (
+            <ResearchBacktestsView
+              metrics={executionMetrics}
+            />
+          )}
 
-      {/* Footer & Disclaimer */}
-      <footer className="border-t border-slate-900 bg-slate-950 py-4 px-6 text-center text-xs text-slate-600">
-        <p className="max-w-4xl mx-auto leading-relaxed">
-          <strong>Ultimate AI Trading — Evidence-Based Trading Architecture</strong>.
-          No bot or algorithm can guarantee profitability or zero losses. The system is designed to say <span className="text-amber-500 font-semibold font-mono">NO TRADE</span> whenever market regime evidence, spread thresholds, news blackouts, or risk criteria are unmet.
-        </p>
-      </footer>
+          {activeTab === 'shadow' && (
+            <ShadowDemoView />
+          )}
 
-      {/* Modals & Drawers */}
+          {activeTab === 'calendar' && (
+            <CalendarContextView
+              events={economicEvents}
+            />
+          )}
+
+          {activeTab === 'audit' && (
+            <AuditRecoveryView
+              logs={auditLogs}
+              checkpoint={savedCheckpoint}
+              onSaveCheckpoint={handleSaveCurrentCheckpoint}
+              onRestoreCheckpoint={handleRestoreCheckpoint}
+            />
+          )}
+
+          {activeTab === 'settings' && (
+            <ConnectionsSettingsView />
+          )}
+        </main>
+
+        {/* Quiet Professional Footer */}
+        <footer className="border-t border-slate-900 bg-slate-950 py-4 px-6 text-center text-[11px] text-slate-500 font-mono">
+          Ultimate AI Trading Platform • Truthful In-Memory Paper Simulation • No Real Capital At Risk • Rule 1 Live Trading Locked
+        </footer>
+      </div>
+
+      {/* Modals */}
       <ModeSelectorModal
         isOpen={isModeModalOpen}
         currentMode={operatingMode}
@@ -515,33 +546,6 @@ export const App: React.FC = () => {
           marketDataService.setOperatingMode(mode);
           logAudit('SYSTEM', 'INFO', `Operating mode altered to ${mode.toUpperCase()}`, undefined, 'OPERATOR');
         }}
-      />
-
-      <ReconciliationModal
-        isOpen={isReconModalOpen}
-        account={account}
-        positions={positions}
-        onClose={() => setIsReconModalOpen(false)}
-        onApplyReconciliation={updated => setAccount(updated)}
-        onLogAudit={logAudit}
-      />
-
-      <ExecutionQualityModal
-        isOpen={isMetricsModalOpen}
-        metrics={executionMetrics}
-        onClose={() => setIsMetricsModalOpen(false)}
-      />
-
-      <EconomicCalendarModal
-        isOpen={isCalendarModalOpen}
-        events={economicEvents}
-        onClose={() => setIsCalendarModalOpen(false)}
-      />
-
-      <AuditLogDrawer
-        isOpen={isAuditDrawerOpen}
-        logs={auditLogs}
-        onClose={() => setIsAuditDrawerOpen(false)}
       />
 
       <KillSwitchModal

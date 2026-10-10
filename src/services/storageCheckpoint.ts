@@ -18,16 +18,15 @@ export interface DurableCheckpoint {
   closedTrades: ClosedTradeRecord[];
   riskLimits: RiskLimits;
   auditLogs: AuditLogEntry[];
-  milestonePhase: string;
-  verifiedCompletions: string[];
-  activeBlockers: string[];
+  storageType: 'BROWSER_LOCAL_STORAGE';
+  verifiedStatusNote: string;
 }
 
-const STORAGE_KEY = 'ultimate_ai_trading_checkpoint_v1';
+const STORAGE_KEY = 'ultimate_ai_trading_checkpoint_v2';
 
 export class StorageCheckpointService {
   /**
-   * Saves snapshot of durable state to local storage
+   * Saves snapshot of local session state to browser LocalStorage.
    */
   public saveCheckpoint(data: {
     operatingMode: OperatingMode;
@@ -37,10 +36,9 @@ export class StorageCheckpointService {
     closedTrades: ClosedTradeRecord[];
     riskLimits: RiskLimits;
     auditLogs: AuditLogEntry[];
-    milestonePhase?: string;
   }): DurableCheckpoint {
     const checkpoint: DurableCheckpoint = {
-      checkpointId: 'chk_' + Date.now().toString(36),
+      checkpointId: 'chk_local_' + Date.now().toString(36),
       timestamp: Date.now(),
       operatingMode: data.operatingMode,
       account: data.account,
@@ -48,23 +46,9 @@ export class StorageCheckpointService {
       orders: data.orders,
       closedTrades: data.closedTrades,
       riskLimits: data.riskLimits,
-      auditLogs: data.auditLogs.slice(-100), // Keep latest 100 entries
-      milestonePhase: data.milestonePhase || 'Stage 15 — Production Verification & Honest Reporting',
-      verifiedCompletions: [
-        'Stage 1: Project Audit & Working Tree Inspection',
-        'Stage 3: Trustworthy Market Data & Feed Freshness Validation',
-        'Stage 4: Broker State Reconciliation Engine & Discrepancy Gate',
-        'Stage 5: Explicit Multistage Order Lifecycle & Idempotency Safeguards',
-        'Stage 6: Multi-Regime Strategy Engine with Transparent Abstention ("NO TRADE")',
-        'Stage 8: Deterministic Risk Controls & Pre-Trade Validation Gate',
-        'Stage 9: Behavioral Safeguard: 5-Consecutive-Loss 30-Minute Lockout',
-        'Stage 10: Dynamic Break-Even & Volatility-Aware Trailing Stops',
-        'Stage 11: Economic Calendar News Proximity Blackouts',
-        'Stage 12: Execution Metrics, Slippage & Sample-Size Quality Tracking',
-        'Stage 13: Emergency Kill Switch & Durable Recovery Checkpoints',
-        'Stage 14: Tamper-Evident Audit Trail'
-      ],
-      activeBlockers: []
+      auditLogs: data.auditLogs.slice(-100),
+      storageType: 'BROWSER_LOCAL_STORAGE',
+      verifiedStatusNote: 'Local browser storage snapshot. Broker-confirmed state requires active MT5 desktop bridge.'
     };
 
     try {
@@ -76,9 +60,6 @@ export class StorageCheckpointService {
     return checkpoint;
   }
 
-  /**
-   * Loads saved durable checkpoint
-   */
   public loadCheckpoint(): DurableCheckpoint | null {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -90,9 +71,6 @@ export class StorageCheckpointService {
     }
   }
 
-  /**
-   * Clears checkpoint (resets to initial clean state)
-   */
   public clearCheckpoint() {
     try {
       localStorage.removeItem(STORAGE_KEY);

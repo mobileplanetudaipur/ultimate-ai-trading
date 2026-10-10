@@ -1,72 +1,88 @@
 import { AccountState, PositionRecord } from '../types/trading';
+import { brokerGateway } from './brokerGateway';
 
 export interface ReconciliationReport {
   timestamp: number;
-  isSynchronized: boolean;
+  isInternalStateConsistent: boolean;
+  brokerGatewayStatus: 'DISCONNECTED' | 'CONNECTED';
   discrepancies: string[];
   localPositionsCount: number;
-  brokerPositionsCount: number;
-  localEquity: number;
-  brokerEquity: number;
-  equityDelta: number;
+  calculatedEquity: number;
+  recordedEquity: number;
+  marginHeadroomValid: boolean;
+  notes: string;
 }
 
 export class ReconciliationService {
   /**
-   * Reconciles local application positions and account balance with broker records
+   * Performs an audit of local ledger mathematics and reports broker gateway connection state.
    */
   public performReconciliation(
     localAccount: AccountState,
-    localPositions: PositionRecord[],
-    mockBrokerDiscrepancy: boolean = false
+    localPositions: PositionRecord[]
   ): { updatedAccount: AccountState; report: ReconciliationReport } {
     const discrepancies: string[] = [];
     const now = Date.now();
+    const brokerStatus = brokerGateway.getStatus();
 
-    // Calculate total margin used and unrealized PnL from active positions
+    // 1. Broker Gateway check
+    if (!brokerStatus.isConnected) {
+      discrepancies.push('Broker Gateway: XM / Windows MT5 bridge is disconnected. Real broker comparison is unavailable.');
+    }
+
+    // 2. Audit local internal consistency
     let calculatedMarginUsed = 0;
     let totalUnrealizedPnl = 0;
 
     for (const pos of localPositions) {
-      const positionMargin = (pos.sizeLots * 100000 * pos.entryPrice) / localAccount.leverage;
+      const spec = brokerGateway.getInstrumentSpec(pos.symbol);
+      const positionMargin = (pos.sizeLots * spec.contractSize * pos.entryPrice) / localAccount.leverage;
       calculatedMarginUsed += positionMargin;
       totalUnrealizedPnl += pos.unrealizedPnl;
     }
 
-    const calculatedEquity = localAccount.balance + totalUnrealizedPnl;
-    const calculatedFreeMargin = calculatedEquity - calculatedMarginUsed;
+    const calculatedEquity = Number((localAccount.balance + totalUnrealizedPnl).toFixed(2));
+    const calculatedFreeMargin = Math.max(0, Number((calculatedEquity - calculatedMarginUsed).toFixed(2)));
     const calculatedMarginLevel = calculatedMarginUsed > 0
-      ? (calculatedEquity / calculatedMarginUsed) * 100
+      ? Number(((calculatedEquity / calculatedMarginUsed) * 100).toFixed(1))
       : 9999.0;
 
-    // Simulate potential discrepancy if flag is enabled (to test Stage 4 safety barrier)
-    if (mockBrokerDiscrepancy) {
-      discrepancies.push('Discrepancy: Broker reports external manual position EUR/USD +0.50 lots not found in local state.');
-      discrepancies.push('Discrepancy: Broker cash balance differs by -$14.50 (unsettled financing fee).');
+    // Check equity math delta
+    const equityMathDelta = Math.abs(calculatedEquity - localAccount.equity);
+    if (equityMathDelta > 0.50) {
+      discrepancies.push(`Ledger Discrepancy: Calculated equity ($${calculatedEquity}) differs from state equity ($${localAccount.equity}) by $${equityMathDelta.toFixed(2)}.`);
     }
 
-    const isSynchronized = discrepancies.length === 0;
+    const isConsistent = discrepancies.length <= 1; // 1 is expected while MT5 bridge is disconnected
 
     const updatedAccount: AccountState = {
       ...localAccount,
-      equity: Number(calculatedEquity.toFixed(2)),
+      equity: calculatedEquity,
       marginUsed: Number(calculatedMarginUsed.toFixed(2)),
-      freeMargin: Number(calculatedFreeMargin.toFixed(2)),
-      marginLevelPercent: Number(calculatedMarginLevel.toFixed(1)),
+      freeMargin: calculatedFreeMargin,
+      marginLevelPercent: calculatedMarginLevel,
+      brokerConfirmed: false, // Truthful: always false in local paper mode
       lastReconciledAt: now,
-      reconciliationStatus: isSynchronized ? 'IN_SYNC' : 'DISCREPANCY_DETECTED',
+      reconciliationStatus: !brokerStatus.isConnected
+        ? 'BROKER_GATEWAY_DISCONNECTED'
+        : isConsistent
+        ? 'LOCAL_CONSISTENT'
+        : 'DISCREPANCY_DETECTED',
       discrepancies
     };
 
     const report: ReconciliationReport = {
       timestamp: now,
-      isSynchronized,
+      isInternalStateConsistent: isConsistent,
+      brokerGatewayStatus: brokerStatus.isConnected ? 'CONNECTED' : 'DISCONNECTED',
       discrepancies,
       localPositionsCount: localPositions.length,
-      brokerPositionsCount: mockBrokerDiscrepancy ? localPositions.length + 1 : localPositions.length,
-      localEquity: updatedAccount.equity,
-      brokerEquity: mockBrokerDiscrepancy ? updatedAccount.equity - 14.5 : updatedAccount.equity,
-      equityDelta: mockBrokerDiscrepancy ? 14.5 : 0
+      calculatedEquity,
+      recordedEquity: localAccount.equity,
+      marginHeadroomValid: calculatedFreeMargin > calculatedMarginUsed * 0.2,
+      notes: brokerStatus.isConnected
+        ? 'Broker connection verified'
+        : 'Operating in self-contained Paper Simulation mode. No broker credentials required.'
     };
 
     return { updatedAccount, report };

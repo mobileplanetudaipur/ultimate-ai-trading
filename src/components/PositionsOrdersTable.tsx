@@ -47,8 +47,8 @@ export const PositionsOrdersTable: React.FC<PositionsOrdersTableProps> = ({
         >
           <Layers className="w-3.5 h-3.5" />
           <span>Active Positions</span>
-          <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-slate-800 text-slate-300 font-mono">
-            {positions.length}
+          <span className="text-[11px] font-mono text-slate-400">
+            ({positions.length})
           </span>
         </button>
 
@@ -61,9 +61,9 @@ export const PositionsOrdersTable: React.FC<PositionsOrdersTableProps> = ({
           }`}
         >
           <ListOrdered className="w-3.5 h-3.5" />
-          <span>Order Lifecycle Tracker (Stage 5)</span>
-          <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-slate-800 text-slate-300 font-mono">
-            {orders.length}
+          <span>Order Lifecycle Tracker</span>
+          <span className="text-[11px] font-mono text-slate-400">
+            ({orders.length})
           </span>
         </button>
 
@@ -77,8 +77,8 @@ export const PositionsOrdersTable: React.FC<PositionsOrdersTableProps> = ({
         >
           <History className="w-3.5 h-3.5" />
           <span>Closed Deals & Realized P&L</span>
-          <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-slate-800 text-slate-300 font-mono">
-            {closedTrades.length}
+          <span className="text-[11px] font-mono text-slate-400">
+            ({closedTrades.length})
           </span>
         </button>
       </div>
@@ -219,10 +219,10 @@ export const PositionsOrdersTable: React.FC<PositionsOrdersTableProps> = ({
                       </td>
                       <td className="p-3">
                         <div className="flex items-center gap-1">
-                          {order.status === 'FILLED' && (
+                          {order.status === 'SIMULATED_FILL' && (
                             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[10px] font-bold">
                               <CheckCircle className="w-3 h-3" />
-                              FILLED
+                              SIMULATED FILL
                             </span>
                           )}
                           {order.status === 'REJECTED' && (
@@ -231,7 +231,7 @@ export const PositionsOrdersTable: React.FC<PositionsOrdersTableProps> = ({
                               REJECTED
                             </span>
                           )}
-                          {order.status !== 'FILLED' && order.status !== 'REJECTED' && (
+                          {order.status !== 'SIMULATED_FILL' && order.status !== 'REJECTED' && (
                             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-sky-500/20 text-sky-400 text-[10px]">
                               <Clock className="w-3 h-3 animate-spin" />
                               {order.status}
@@ -255,11 +255,9 @@ export const PositionsOrdersTable: React.FC<PositionsOrdersTableProps> = ({
                         <div className="text-slate-500">Comm: ${order.commissionPaid.toFixed(2)}</div>
                       </td>
                       <td className="p-3 text-slate-400 text-[10px]">
-                        {order.brokerConfirmationToken ? (
-                          <span className="text-emerald-400 font-mono">{order.brokerConfirmationToken}</span>
-                        ) : (
-                          '—'
-                        )}
+                        <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono">
+                          {order.isSimulatedOrder ? 'Local Paper' : 'Broker'}
+                        </span>
                       </td>
                       <td className="p-3 text-right text-slate-500 text-[10px]">
                         {new Date(order.createdAt).toLocaleTimeString()}

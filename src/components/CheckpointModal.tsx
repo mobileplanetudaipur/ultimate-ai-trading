@@ -49,8 +49,8 @@ export const CheckpointModal: React.FC<CheckpointModalProps> = ({
                 <span className="text-slate-200">{new Date(checkpoint.timestamp).toLocaleString()}</span>
               </div>
               <div className="flex items-center justify-between text-slate-400 mb-1">
-                <span>Milestone Phase:</span>
-                <span className="text-emerald-400 font-bold">{checkpoint.milestonePhase}</span>
+                <span>Storage Medium:</span>
+                <span className="text-emerald-400 font-bold">{checkpoint.storageType}</span>
               </div>
               <div className="flex items-center justify-between text-slate-400">
                 <span>Operating Mode:</span>
@@ -60,13 +60,11 @@ export const CheckpointModal: React.FC<CheckpointModalProps> = ({
 
             <div className="bg-slate-950/60 border border-slate-800 p-3 rounded-lg">
               <span className="text-slate-400 block mb-1 text-[11px] font-sans font-semibold">
-                Verified Stages in Checkpoint ({checkpoint.verifiedCompletions.length}):
+                Status Disclosure:
               </span>
-              <ul className="text-[11px] text-slate-300 space-y-1 list-disc list-inside max-h-36 overflow-y-auto">
-                {checkpoint.verifiedCompletions.map((comp, idx) => (
-                  <li key={idx} className="text-slate-300">{comp}</li>
-                ))}
-              </ul>
+              <p className="text-[11px] text-slate-300">
+                {checkpoint.verifiedStatusNote}
+              </p>
             </div>
           </div>
         ) : (

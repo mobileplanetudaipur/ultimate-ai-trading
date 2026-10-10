@@ -72,14 +72,6 @@ export const RiskControllerPanel: React.FC<RiskControllerPanelProps> = ({
           >
             + Test Consecutive Loss ({status.consecutiveLossCount}/5)
           </button>
-          {status.isCooldownActive && (
-            <button
-              onClick={onResetCooldown}
-              className="text-[11px] font-mono px-2 py-1 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 transition-colors cursor-pointer"
-            >
-              Reset Lockout
-            </button>
-          )}
         </div>
       </div>
 
@@ -196,7 +188,7 @@ export const RiskControllerPanel: React.FC<RiskControllerPanelProps> = ({
               </div>
               <div className="flex justify-between">
                 <span>Max Total Exposure:</span>
-                <span className="text-slate-200 font-semibold">{limits.maxTotalExposurePercent}% Equity</span>
+                <span className="text-slate-200 font-semibold">{(limits.maxRiskPerTradePercent * limits.maxOpenPositions).toFixed(2)}% Equity</span>
               </div>
               <div className="flex justify-between">
                 <span>Current Open Exposure:</span>

@@ -18,9 +18,9 @@ export function calculateExecutionMetrics(
   const totalSlippage = closedTrades.reduce((sum, t) => sum + (t.slippagePips || 0), 0);
   const avgSlippagePips = totalTrades > 0 ? Number((totalSlippage / totalTrades).toFixed(2)) : 0;
 
-  const filledOrders = orders.filter(o => o.status === 'FILLED').length;
+  const filledOrders = orders.filter(o => o.status === 'SIMULATED_FILL').length;
   const rejectedOrders = orders.filter(o => o.status === 'REJECTED').length;
-  const totalConsidered = orders.filter(o => o.status === 'FILLED' || o.status === 'REJECTED').length;
+  const totalConsidered = orders.filter(o => o.status === 'SIMULATED_FILL' || o.status === 'REJECTED').length;
   const orderFillRatePercent = totalConsidered > 0 ? Number(((filledOrders / totalConsidered) * 100).toFixed(1)) : 100;
 
   // Approximate annualized Sharpe ratio

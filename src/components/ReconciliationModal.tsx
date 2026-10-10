@@ -28,22 +28,20 @@ export const ReconciliationModal: React.FC<ReconciliationModalProps> = ({
   const handleRunReconciliation = () => {
     const { updatedAccount, report } = reconciliationService.performReconciliation(
       account,
-      positions,
-      injectDiscrepancy
+      positions
     );
 
     setLastReport(report);
     onApplyReconciliation(updatedAccount);
 
-    if (report.isSynchronized) {
-      onLogAudit('RECONCILIATION', 'INFO', 'Periodic broker state audit completed: Zero discrepancies. State fully synchronized.', {
-        equity: report.localEquity,
+    if (report.isInternalStateConsistent) {
+      onLogAudit('RECONCILIATION', 'INFO', 'Local ledger math audit completed: Internal consistency verified.', {
+        equity: report.calculatedEquity,
         positions: report.localPositionsCount
       });
     } else {
-      onLogAudit('RECONCILIATION', 'ERROR', 'Stage 4 Discrepancy Gate: Broker state mismatch detected. New automated entries blocked.', {
-        discrepancies: report.discrepancies,
-        equityDelta: report.equityDelta
+      onLogAudit('RECONCILIATION', 'WARN', 'Reconciliation audit note: Discrepancy or gateway disconnected.', {
+        discrepancies: report.discrepancies
       });
     }
   };
@@ -60,10 +58,10 @@ export const ReconciliationModal: React.FC<ReconciliationModalProps> = ({
 
         <div className="flex items-center gap-2 mb-2">
           <RotateCcw className="w-5 h-5 text-blue-400" />
-          <h2 className="text-lg font-bold text-white">Broker State Reconciliation (Stage 4)</h2>
+          <h2 className="text-lg font-bold text-white">State Reconciliation & Ledger Integrity (Phase 4)</h2>
         </div>
         <p className="text-xs text-slate-400 mb-4 leading-relaxed">
-          Confirmed broker records are the singular source of truth. Discrepancies between local order state and broker records immediately lock the system to prevent unintended double executions or phantom fills.
+          Verifies ledger math consistency between cash balance, open position margin, floating P&L, and reported equity.
         </p>
 
         {/* Current State Summary */}
@@ -71,9 +69,9 @@ export const ReconciliationModal: React.FC<ReconciliationModalProps> = ({
           <div className="flex items-center justify-between text-xs font-mono mb-2">
             <span className="text-slate-400">Reconciliation Status:</span>
             <span className={`px-2 py-0.5 rounded font-bold ${
-              account.reconciliationStatus === 'IN_SYNC'
+              account.reconciliationStatus === 'LOCAL_CONSISTENT'
                 ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
+                : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
             }`}>
               {account.reconciliationStatus}
             </span>
