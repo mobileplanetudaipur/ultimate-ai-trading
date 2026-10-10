@@ -1,0 +1,319 @@
+import {
+  AccountState,
+  ClosedTradeRecord,
+  MarketQuote,
+  OrderRecord,
+  OrderStatus,
+  PositionRecord
+} from '../types/trading';
+
+export class OrderLifecycleManager {
+  private orders: Map<string, OrderRecord> = new Map();
+  private positions: Map<string, PositionRecord> = new Map();
+  private closedTrades: ClosedTradeRecord[] = [];
+  private idempotencyKeys: Set<string> = new Set();
+
+  public getOrders(): OrderRecord[] {
+    return Array.from(this.orders.values()).sort((a, b) => b.createdAt - a.createdAt);
+  }
+
+  public getPositions(): PositionRecord[] {
+    return Array.from(this.positions.values()).sort((a, b) => b.openedAt - a.openedAt);
+  }
+
+  public getClosedTrades(): ClosedTradeRecord[] {
+    return [...this.closedTrades].sort((a, b) => b.closedAt - a.closedAt);
+  }
+
+  /**
+   * Submits an order through the formal multistage lifecycle
+   */
+  public async submitOrder(params: {
+    clientOrderId: string;
+    idempotencyKey: string;
+    symbol: string;
+    side: 'BUY' | 'SELL';
+    sizeLots: number;
+    requestedPrice: number;
+    stopLossPrice: number;
+    takeProfitPrice: number;
+    strategyId: string;
+    quote: MarketQuote;
+    simulateBrokerFailure?: boolean;
+    simulateSlippagePips?: number;
+  }): Promise<{ order: OrderRecord; position?: PositionRecord }> {
+    const {
+      clientOrderId,
+      idempotencyKey,
+      symbol,
+      side,
+      sizeLots,
+      requestedPrice,
+      stopLossPrice,
+      takeProfitPrice,
+      strategyId,
+      quote,
+      simulateBrokerFailure = false,
+      simulateSlippagePips = 0.2
+    } = params;
+
+    // 1. Idempotency Check
+    if (this.idempotencyKeys.has(idempotencyKey)) {
+      throw new Error(`Duplicate submission detected. Idempotency key '${idempotencyKey}' already processed.`);
+    }
+    this.idempotencyKeys.add(idempotencyKey);
+
+    const orderId = 'ord_' + Math.random().toString(36).substring(2, 9);
+    const now = Date.now();
+
+    // Lifecycle state: PREPARED
+    const order: OrderRecord = {
+      id: orderId,
+      clientOrderId,
+      idempotencyKey,
+      symbol,
+      side,
+      orderType: 'MARKET',
+      requestedSize: sizeLots,
+      filledSize: 0,
+      requestedPrice,
+      stopLossPrice,
+      takeProfitPrice,
+      commissionPaid: 0,
+      status: 'PREPARED',
+      strategyId,
+      createdAt: now,
+      updatedAt: now
+    };
+    this.orders.set(orderId, order);
+
+    // Transition: RISK_APPROVED -> SUBMITTED
+    order.status = 'SUBMITTED';
+    order.updatedAt = Date.now();
+
+    // Transition: ACKNOWLEDGED
+    order.status = 'ACKNOWLEDGED';
+    order.updatedAt = Date.now();
+
+    // Check simulated rejection
+    if (simulateBrokerFailure) {
+      order.status = 'REJECTED';
+      order.rejectionReason = 'Broker rejected: Liquidity provider timeout or price out of tolerance.';
+      order.updatedAt = Date.now();
+      return { order };
+    }
+
+    // Execution with realistic slippage & commission
+    const slippageUnits = (simulateSlippagePips / quote.pipMultiplier);
+    const executedPrice = side === 'BUY'
+      ? Number((quote.ask + slippageUnits).toFixed(quote.digits))
+      : Number((quote.bid - slippageUnits).toFixed(quote.digits));
+
+    const commission = Number((sizeLots * 7.0).toFixed(2)); // Standard $7 / lot round-turn commission
+
+    order.filledSize = sizeLots;
+    order.executedPrice = executedPrice;
+    order.slippagePips = simulateSlippagePips;
+    order.commissionPaid = commission;
+    order.status = 'FILLED';
+    order.brokerConfirmationToken = 'brk_tk_' + Math.random().toString(36).substring(2, 8).toUpperCase();
+    order.updatedAt = Date.now();
+
+    // Create Position Record (distinct from order)
+    const positionId = 'pos_' + Math.random().toString(36).substring(2, 9);
+    const position: PositionRecord = {
+      id: positionId,
+      symbol,
+      side,
+      sizeLots,
+      entryPrice: executedPrice,
+      currentPrice: executedPrice,
+      stopLossPrice,
+      takeProfitPrice,
+      isTrailingStopActive: false,
+      trailingStopDistancePips: 20,
+      isBreakEvenLocked: false,
+      unrealizedPnl: -commission, // Starts with spread + commission cost
+      realizedPnl: 0,
+      commission,
+      swap: 0,
+      brokerConfirmed: true,
+      openedAt: Date.now(),
+      strategyId
+    };
+
+    this.positions.set(positionId, position);
+    return { order, position };
+  }
+
+  /**
+   * Updates positions marks, trailing stops, and evaluates TP/SL hits
+   */
+  public updatePositionsWithQuote(quote: MarketQuote): { closedTrades: ClosedTradeRecord[]; modifiedPositions: PositionRecord[] } {
+    const closed: ClosedTradeRecord[] = [];
+    const modified: PositionRecord[] = [];
+
+    for (const [posId, pos] of this.positions.entries()) {
+      if (pos.symbol !== quote.symbol) continue;
+
+      const currentPrice = pos.side === 'BUY' ? quote.bid : quote.ask;
+      pos.currentPrice = currentPrice;
+
+      // Calculate unrealized P&L
+      const priceDiff = pos.side === 'BUY' ? currentPrice - pos.entryPrice : pos.entryPrice - currentPrice;
+      const pipGain = priceDiff * quote.pipMultiplier;
+      const grossPnl = priceDiff * 100000 * pos.sizeLots;
+      pos.unrealizedPnl = Number((grossPnl - pos.commission - pos.swap).toFixed(2));
+
+      // Dynamic Break-Even protection (Stage 10)
+      if (!pos.isBreakEvenLocked && pipGain >= 20) {
+        // Once in 20 pips profit, move stop loss to entry price + 1 pip (spread buffer)
+        const breakEvenPrice = pos.side === 'BUY'
+          ? Number((pos.entryPrice + 1.0 / quote.pipMultiplier).toFixed(quote.digits))
+          : Number((pos.entryPrice - 1.0 / quote.pipMultiplier).toFixed(quote.digits));
+        
+        pos.stopLossPrice = breakEvenPrice;
+        pos.isBreakEvenLocked = true;
+        modified.push({ ...pos });
+      }
+
+      // Dynamic Trailing Stop protection (Stage 10)
+      if (pos.isTrailingStopActive) {
+        const trailOffset = pos.trailingStopDistancePips / quote.pipMultiplier;
+        if (pos.side === 'BUY') {
+          const prospectiveStop = Number((currentPrice - trailOffset).toFixed(quote.digits));
+          if (prospectiveStop > pos.stopLossPrice) {
+            pos.stopLossPrice = prospectiveStop;
+            modified.push({ ...pos });
+          }
+        } else {
+          const prospectiveStop = Number((currentPrice + trailOffset).toFixed(quote.digits));
+          if (prospectiveStop < pos.stopLossPrice) {
+            pos.stopLossPrice = prospectiveStop;
+            modified.push({ ...pos });
+          }
+        }
+      }
+
+      // Check Stop Loss Trigger
+      let hitSL = false;
+      let hitTP = false;
+
+      if (pos.side === 'BUY') {
+        if (currentPrice <= pos.stopLossPrice) hitSL = true;
+        else if (pos.takeProfitPrice > 0 && currentPrice >= pos.takeProfitPrice) hitTP = true;
+      } else {
+        if (currentPrice >= pos.stopLossPrice) hitSL = true;
+        else if (pos.takeProfitPrice > 0 && currentPrice <= pos.takeProfitPrice) hitTP = true;
+      }
+
+      if (hitSL || hitTP) {
+        const exitReason = hitTP
+          ? 'TAKE_PROFIT'
+          : pos.isTrailingStopActive || pos.isBreakEvenLocked
+          ? 'TRAILING_STOP'
+          : 'STOP_LOSS';
+
+        const closedRecord: ClosedTradeRecord = {
+          id: 'trade_' + Math.random().toString(36).substring(2, 9),
+          positionId: pos.id,
+          symbol: pos.symbol,
+          side: pos.side,
+          sizeLots: pos.sizeLots,
+          entryPrice: pos.entryPrice,
+          exitPrice: currentPrice,
+          slippagePips: 0.1,
+          grossPnl: Number(grossPnl.toFixed(2)),
+          commission: pos.commission,
+          swap: pos.swap,
+          netPnl: Number((grossPnl - pos.commission - pos.swap).toFixed(2)),
+          openedAt: pos.openedAt,
+          closedAt: Date.now(),
+          exitReason,
+          strategyId: pos.strategyId
+        };
+
+        this.positions.delete(posId);
+        this.closedTrades.push(closedRecord);
+        closed.push(closedRecord);
+      }
+    }
+
+    return { closedTrades: closed, modifiedPositions: modified };
+  }
+
+  /**
+   * Manually closes a position
+   */
+  public closePosition(positionId: string, quote: MarketQuote, reason: ClosedTradeRecord['exitReason'] = 'MANUAL_CLOSE'): ClosedTradeRecord | null {
+    const pos = this.positions.get(positionId);
+    if (!pos) return null;
+
+    const currentPrice = pos.side === 'BUY' ? quote.bid : quote.ask;
+    const priceDiff = pos.side === 'BUY' ? currentPrice - pos.entryPrice : pos.entryPrice - currentPrice;
+    const grossPnl = priceDiff * 100000 * pos.sizeLots;
+    const netPnl = Number((grossPnl - pos.commission - pos.swap).toFixed(2));
+
+    const closedRecord: ClosedTradeRecord = {
+      id: 'trade_' + Math.random().toString(36).substring(2, 9),
+      positionId: pos.id,
+      symbol: pos.symbol,
+      side: pos.side,
+      sizeLots: pos.sizeLots,
+      entryPrice: pos.entryPrice,
+      exitPrice: currentPrice,
+      slippagePips: 0.1,
+      grossPnl: Number(grossPnl.toFixed(2)),
+      commission: pos.commission,
+      swap: pos.swap,
+      netPnl,
+      openedAt: pos.openedAt,
+      closedAt: Date.now(),
+      exitReason: reason,
+      strategyId: pos.strategyId
+    };
+
+    this.positions.delete(positionId);
+    this.closedTrades.push(closedRecord);
+    return closedRecord;
+  }
+
+  /**
+   * Toggles trailing stop on an active position
+   */
+  public toggleTrailingStop(positionId: string, distancePips: number = 15): boolean {
+    const pos = this.positions.get(positionId);
+    if (!pos) return false;
+
+    pos.isTrailingStopActive = !pos.isTrailingStopActive;
+    pos.trailingStopDistancePips = distancePips;
+    return true;
+  }
+
+  /**
+   * Closes all active positions (used in Kill Switch or emergency)
+   */
+  public closeAllPositions(getQuoteFn: (symbol: string) => MarketQuote | undefined): ClosedTradeRecord[] {
+    const closedList: ClosedTradeRecord[] = [];
+    for (const [id, pos] of Array.from(this.positions.entries())) {
+      const q = getQuoteFn(pos.symbol);
+      if (q) {
+        const closed = this.closePosition(id, q, 'KILL_SWITCH');
+        if (closed) closedList.push(closed);
+      }
+    }
+    return closedList;
+  }
+
+  public setInitialState(positions: PositionRecord[], orders: OrderRecord[], closed: ClosedTradeRecord[]) {
+    this.positions.clear();
+    for (const p of positions) this.positions.set(p.id, p);
+
+    this.orders.clear();
+    for (const o of orders) this.orders.set(o.id, o);
+
+    this.closedTrades = [...closed];
+  }
+}
+
+export const orderManager = new OrderLifecycleManager();
