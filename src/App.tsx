@@ -40,9 +40,13 @@ import { KillSwitchModal } from './components/KillSwitchModal';
 import { CheckpointModal } from './components/CheckpointModal';
 import { AlertCircle, CheckCircle, Info, ShieldAlert } from 'lucide-react';
 
+const getErrorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : 'Unknown error.';
+
 export const App: React.FC = () => {
   // Navigation State
   const [activeTab, setActiveTab] = useState<ActiveNavTab>('overview');
+  const [isNavigationOpen, setIsNavigationOpen] = useState(false);
 
   // Operating State
   const [operatingMode, setOperatingMode] = useState<OperatingMode>('simulated');
@@ -119,7 +123,15 @@ export const App: React.FC = () => {
     marketDataService.startTickStream();
     setQuotes(marketDataService.getAllQuotes());
 
-    const chk = checkpointService.loadCheckpoint();
+    let chk: DurableCheckpoint | null = null;
+    try {
+      chk = checkpointService.loadCheckpoint();
+    } catch (error) {
+      const message = getErrorMessage(error);
+      logAudit('SYSTEM', 'ERROR', 'Saved local checkpoint could not be loaded.', { error: message }, 'OPERATOR');
+      showNotice(`Saved checkpoint could not be loaded: ${message}`, 'error');
+    }
+
     if (chk) {
       setSavedCheckpoint(chk);
       logAudit('SYSTEM', 'INFO', `Local checkpoint ${chk.checkpointId} discovered in browser storage.`, undefined, 'OPERATOR');
@@ -157,6 +169,16 @@ export const App: React.FC = () => {
       marketDataService.stopTickStream();
     };
   }, [logAudit]);
+
+  useEffect(() => {
+    if (!isNavigationOpen) return;
+
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsNavigationOpen(false);
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [isNavigationOpen]);
 
   // Recalculate equity and margins when positions change
   useEffect(() => {
@@ -355,24 +377,36 @@ export const App: React.FC = () => {
   };
 
   const handleSaveCurrentCheckpoint = () => {
-    const chk = checkpointService.saveCheckpoint({
-      operatingMode,
-      account,
-      positions,
-      orders,
-      closedTrades,
-      riskLimits,
-      auditLogs
-    });
-    setSavedCheckpoint(chk);
-    logAudit('SYSTEM', 'INFO', `Local checkpoint saved: ${chk.checkpointId}`, { timestamp: chk.timestamp }, 'OPERATOR');
-    showNotice(`Local checkpoint ${chk.checkpointId} saved to browser storage.`, 'success');
+    try {
+      const currentRiskStatus = riskEngine.getStatus();
+      const chk = checkpointService.saveCheckpoint({
+        operatingMode,
+        account,
+        positions,
+        orders,
+        closedTrades,
+        riskLimits,
+        riskStatus: currentRiskStatus,
+        auditLogs
+      });
+      setRiskStatus(currentRiskStatus);
+      setSavedCheckpoint(chk);
+      logAudit('SYSTEM', 'INFO', `Local checkpoint saved: ${chk.checkpointId}`, { timestamp: chk.timestamp }, 'OPERATOR');
+      showNotice(`Local checkpoint ${chk.checkpointId} saved to browser storage.`, 'success');
+    } catch (error) {
+      const message = getErrorMessage(error);
+      logAudit('SYSTEM', 'ERROR', 'Local checkpoint save failed.', { error: message }, 'OPERATOR');
+      showNotice(`Checkpoint was not saved: ${message}`, 'error');
+    }
   };
 
   const handleRestoreCheckpoint = () => {
     if (!savedCheckpoint) return;
     setOperatingMode(savedCheckpoint.operatingMode);
+    marketDataService.setOperatingMode(savedCheckpoint.operatingMode);
     setAccount(savedCheckpoint.account);
+    riskEngine.restoreStatus(savedCheckpoint.riskStatus);
+    setRiskStatus(riskEngine.getStatus());
     orderManager.setInitialState(savedCheckpoint.positions, savedCheckpoint.orders, savedCheckpoint.closedTrades);
     setPositions([...orderManager.getPositions()]);
     setOrders([...orderManager.getOrders()]);
@@ -404,7 +438,12 @@ export const App: React.FC = () => {
       {/* Sleek Apple-inspired Navigation Sidebar */}
       <NavigationSidebar
         activeTab={activeTab}
-        onSelectTab={setActiveTab}
+        onSelectTab={tab => {
+          setActiveTab(tab);
+          setIsNavigationOpen(false);
+        }}
+        isOpen={isNavigationOpen}
+        onClose={() => setIsNavigationOpen(false)}
         operatingMode={operatingMode}
         riskStatus={riskStatus}
         openPositionsCount={positions.length}
@@ -416,6 +455,9 @@ export const App: React.FC = () => {
           activeViewTitle={getViewTitle()}
           account={account}
           riskStatus={riskStatus}
+          riskLimits={riskLimits}
+          isNavigationOpen={isNavigationOpen}
+          onToggleNavigation={() => setIsNavigationOpen(open => !open)}
           feedLatencyMs={activeQuote.latencyMs}
           onTriggerKillSwitch={() => setIsKillSwitchModalOpen(true)}
           onTogglePause={handleTogglePause}

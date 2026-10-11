@@ -2,6 +2,23 @@ import { RiskEngine } from '../services/riskEngine';
 import { MarketQuote, AccountState, EconomicEvent } from '../types/trading';
 import { OrderLifecycleManager } from '../services/orderLifecycleManager';
 import { strategyEngine, DEFINED_STRATEGIES } from '../services/strategyEngine';
+import { StorageCheckpointService } from '../services/storageCheckpoint';
+
+class MemoryStorage {
+  private value: string | null = null;
+
+  getItem(_key: string) {
+    return this.value;
+  }
+
+  setItem(_key: string, value: string) {
+    this.value = value;
+  }
+
+  removeItem(_key: string) {
+    this.value = null;
+  }
+}
 
 /**
  * Automated Safety & Risk Engine Verification Suite
@@ -396,6 +413,159 @@ async function runTests() {
       duplicateCaught === true,
       'Test 18: Idempotency duplicate order protection prevents double order submission',
       `Caught duplicate: ${duplicateCaught}`
+    );
+  }
+
+  // Test 19: Checkpoints preserve risk lockouts across restore
+  {
+    const storage = new MemoryStorage();
+    const checkpointService = new StorageCheckpointService(storage);
+    const riskStatus = {
+      ...new RiskEngine(10000).getStatus(),
+      isTradingPaused: true,
+      pauseReason: 'Test recovery lock',
+      todayTradesCount: 4,
+      killSwitchTriggered: true,
+      killSwitchTriggeredAt: Date.now()
+    };
+    checkpointService.saveCheckpoint({
+      operatingMode: 'simulated',
+      account: baseAccount,
+      positions: [],
+      orders: [],
+      closedTrades: [],
+      riskLimits: new RiskEngine(10000).getLimits(),
+      riskStatus,
+      auditLogs: []
+    });
+
+    const restored = checkpointService.loadCheckpoint();
+    const restoredEngine = new RiskEngine(10000);
+    if (restored) restoredEngine.restoreStatus(restored.riskStatus);
+    const restoredStatus = restoredEngine.getStatus();
+    assert(
+      restoredStatus.isTradingPaused
+        && restoredStatus.killSwitchTriggered
+        && restoredStatus.todayTradesCount === 4
+        && restoredStatus.pauseReason === 'Test recovery lock',
+      'Test 19: Checkpoint restore retains pause, kill switch, and daily risk counters',
+      `Got paused: ${restoredStatus.isTradingPaused}, kill switch: ${restoredStatus.killSwitchTriggered}, trades: ${restoredStatus.todayTradesCount}`
+    );
+  }
+
+  // Test 20: Legacy checkpoints recover with entries safely locked
+  {
+    const storage = new MemoryStorage();
+    const checkpointService = new StorageCheckpointService(storage);
+    const saved = checkpointService.saveCheckpoint({
+      operatingMode: 'simulated',
+      account: baseAccount,
+      positions: [],
+      orders: [],
+      closedTrades: [],
+      riskLimits: new RiskEngine(10000).getLimits(),
+      riskStatus: new RiskEngine(10000).getStatus(),
+      auditLogs: []
+    });
+    const legacy = { ...saved } as Record<string, unknown>;
+    delete legacy.schemaVersion;
+    delete legacy.riskStatus;
+    storage.setItem('', JSON.stringify(legacy));
+
+    const migrated = checkpointService.loadCheckpoint();
+    assert(
+      migrated?.riskStatus.killSwitchTriggered === true
+        && migrated.riskStatus.isTradingPaused
+        && migrated.verifiedStatusNote.includes('Legacy'),
+      'Test 20: Legacy checkpoint without saved risk state migrates with entries locked',
+      `Got checkpoint: ${migrated?.checkpointId}, kill switch: ${migrated?.riskStatus.killSwitchTriggered}`
+    );
+  }
+
+  // Test 21: Checkpoint storage errors are surfaced instead of returning success
+  {
+    const failingStorage = {
+      getItem: () => null,
+      setItem: () => { throw new Error('Storage quota exceeded'); },
+      removeItem: () => undefined
+    };
+    const checkpointService = new StorageCheckpointService(failingStorage);
+    let failureReported = false;
+
+    try {
+      checkpointService.saveCheckpoint({
+        operatingMode: 'simulated',
+        account: baseAccount,
+        positions: [],
+        orders: [],
+        closedTrades: [],
+        riskLimits: new RiskEngine(10000).getLimits(),
+        riskStatus: new RiskEngine(10000).getStatus(),
+        auditLogs: []
+      });
+    } catch (error) {
+      failureReported = error instanceof Error && error.message === 'Storage quota exceeded';
+    }
+
+    assert(
+      failureReported,
+      'Test 21: Checkpoint storage failures are thrown for visible UI handling',
+      `Reported failure: ${failureReported}`
+    );
+  }
+
+  // Test 22: Corrupted checkpoints report an explicit load error
+  {
+    const storage = new MemoryStorage();
+    storage.setItem('checkpoint', '{invalid json');
+    const checkpointService = new StorageCheckpointService(storage);
+    let loadErrorReported = false;
+
+    try {
+      checkpointService.loadCheckpoint();
+    } catch (error) {
+      loadErrorReported = error instanceof Error && error.message.includes('not valid JSON');
+    }
+
+    assert(
+      loadErrorReported,
+      'Test 22: Corrupted checkpoint data is reported instead of silently discarded',
+      `Reported load error: ${loadErrorReported}`
+    );
+  }
+
+  // Test 23: Inconsistent lockout data is rejected during checkpoint load
+  {
+    const storage = new MemoryStorage();
+    const checkpointService = new StorageCheckpointService(storage);
+    const saved = checkpointService.saveCheckpoint({
+      operatingMode: 'simulated',
+      account: baseAccount,
+      positions: [],
+      orders: [],
+      closedTrades: [],
+      riskLimits: new RiskEngine(10000).getLimits(),
+      riskStatus: new RiskEngine(10000).getStatus(),
+      auditLogs: []
+    });
+    const invalid = {
+      ...saved,
+      riskStatus: { ...saved.riskStatus, isCooldownActive: true }
+    };
+    delete invalid.riskStatus.cooldownEndsAt;
+    storage.setItem('checkpoint', JSON.stringify(invalid));
+    let invalidStateRejected = false;
+
+    try {
+      checkpointService.loadCheckpoint();
+    } catch (error) {
+      invalidStateRejected = error instanceof Error && error.message.includes('invalid risk state');
+    }
+
+    assert(
+      invalidStateRejected,
+      'Test 23: Active cooldown without an end time is rejected as invalid risk state',
+      `Invalid state rejected: ${invalidStateRejected}`
     );
   }
 

@@ -40,6 +40,7 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
 }) => {
   const isDrawdownCritical = riskStatus.todayDrawdownPercent >= riskLimits.dailyLossLimitPercent;
   const isTradeCapReached = riskStatus.todayTradesCount >= riskLimits.maxDailyTrades;
+  const tradesRemaining = Math.max(0, riskLimits.maxDailyTrades - riskStatus.todayTradesCount);
 
   return (
     <div className="space-y-6">
@@ -127,7 +128,7 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
           <span className={`text-lg font-bold ${isTradeCapReached ? 'text-rose-400' : 'text-slate-100'}`}>
             {riskStatus.todayTradesCount} / {riskLimits.maxDailyTrades}
           </span>
-          <span className="text-[10px] text-slate-400 block mt-1">{8 - riskStatus.todayTradesCount} trades headroom</span>
+          <span className="text-[10px] text-slate-400 block mt-1">{tradesRemaining} trades remaining</span>
         </div>
 
         {/* Free Margin */}

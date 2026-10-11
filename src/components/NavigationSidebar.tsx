@@ -11,7 +11,8 @@ import {
   FileText,
   Settings,
   ShieldCheck,
-  AlertTriangle
+  AlertTriangle,
+  X
 } from 'lucide-react';
 import { OperatingMode, RiskStatus } from '../types/trading';
 
@@ -30,6 +31,8 @@ export type ActiveNavTab =
 interface NavigationSidebarProps {
   activeTab: ActiveNavTab;
   onSelectTab: (tab: ActiveNavTab) => void;
+  isOpen: boolean;
+  onClose: () => void;
   operatingMode: OperatingMode;
   riskStatus: RiskStatus;
   openPositionsCount: number;
@@ -38,6 +41,8 @@ interface NavigationSidebarProps {
 export const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
   activeTab,
   onSelectTab,
+  isOpen,
+  onClose,
   operatingMode,
   riskStatus,
   openPositionsCount
@@ -56,7 +61,21 @@ export const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
   ];
 
   return (
-    <aside className="w-64 bg-slate-900/90 border-r border-slate-800/80 flex flex-col justify-between shrink-0 select-none backdrop-blur-md">
+    <>
+      {isOpen && (
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close navigation menu"
+          className="fixed inset-0 z-40 bg-slate-950/70 lg:hidden"
+        />
+      )}
+      <aside
+        id="primary-navigation"
+        className={`fixed inset-y-0 left-0 z-50 flex h-screen w-72 max-w-[calc(100vw-2rem)] shrink-0 select-none flex-col justify-between border-r border-slate-800/80 bg-slate-900 lg:sticky lg:top-0 lg:z-20 lg:w-64 lg:max-w-none lg:translate-x-0 lg:backdrop-blur-md transition-transform duration-200 ${
+          isOpen ? 'translate-x-0' : '-translate-x-full'
+        }`}
+      >
       <div>
         {/* Brand Header */}
         <div className="h-16 px-5 flex items-center gap-3 border-b border-slate-800/80">
@@ -64,13 +83,21 @@ export const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
             <span className="font-mono text-sm tracking-wider">UA</span>
           </div>
           <div>
-            <div className="font-bold text-sm tracking-tight text-white leading-none">Ultimate AI Trading</div>
-            <div className="text-[11px] text-slate-400 font-mono mt-1">Disciplined Risk Engine</div>
+            <div className="whitespace-nowrap font-bold text-sm tracking-tight text-white leading-none">Ultimate AI Trading</div>
+            <div className="hidden text-[11px] text-slate-400 font-mono mt-1 lg:block">Disciplined Risk Engine</div>
           </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close navigation menu"
+            className="ml-auto inline-flex h-10 w-10 items-center justify-center rounded-lg text-slate-300 hover:bg-slate-800 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 lg:hidden"
+          >
+            <X className="w-5 h-5" aria-hidden="true" />
+          </button>
         </div>
 
         {/* Navigation Links */}
-        <nav className="p-3 space-y-1">
+        <nav aria-label="Primary navigation" className="p-3 space-y-1">
           {navItems.map(item => {
             const Icon = item.icon;
             const isActive = activeTab === item.id;
@@ -79,6 +106,7 @@ export const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
               <button
                 key={item.id}
                 onClick={() => onSelectTab(item.id)}
+                aria-current={isActive ? 'page' : undefined}
                 className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium transition-all cursor-pointer ${
                   isActive
                     ? 'bg-blue-600/15 text-blue-300 font-semibold border border-blue-500/30 shadow-xs'
@@ -125,6 +153,7 @@ export const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
           Live execution disabled by design per Rule 1. Zero real capital at risk.
         </div>
       </div>
-    </aside>
+      </aside>
+    </>
   );
 };

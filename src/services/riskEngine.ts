@@ -56,6 +56,10 @@ export class RiskEngine {
     return { ...this.status };
   }
 
+  public restoreStatus(status: RiskStatus) {
+    this.status = { ...status };
+  }
+
   public setTradingPaused(paused: boolean, reason?: string) {
     this.status.isTradingPaused = paused;
     this.status.pauseReason = reason;
