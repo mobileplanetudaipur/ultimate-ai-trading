@@ -90,6 +90,7 @@ export const TopBar: React.FC<TopBarProps> = ({
         <button
           onClick={onTogglePause}
           disabled={riskStatus.killSwitchTriggered}
+          aria-label={riskStatus.isTradingPaused ? 'Resume entries' : 'Pause entries'}
           className={`flex min-h-10 items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 ${
             riskStatus.isTradingPaused
               ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 hover:bg-amber-500/30'
@@ -98,11 +99,12 @@ export const TopBar: React.FC<TopBarProps> = ({
           title="Pause or resume automated strategy signals"
         >
           {riskStatus.isTradingPaused ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
-          <span>{riskStatus.isTradingPaused ? 'Resume Entries' : 'Pause Entries'}</span>
+          <span className="hidden sm:inline">{riskStatus.isTradingPaused ? 'Resume Entries' : 'Pause Entries'}</span>
         </button>
 
         <button
           onClick={onTriggerKillSwitch}
+          aria-label="Emergency halt"
           className={`flex min-h-10 items-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider transition-all cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-red-300 ${
             riskStatus.killSwitchTriggered
               ? 'bg-red-700 text-white ring-2 ring-red-400'
