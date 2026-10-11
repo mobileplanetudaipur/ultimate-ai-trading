@@ -65,14 +65,14 @@ export const RiskCenterView: React.FC<RiskCenterViewProps> = ({
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 font-mono text-xs">
           <div className="p-3 rounded-lg bg-slate-950/60 border border-slate-800">
             <span className="text-[10px] text-slate-400 uppercase block mb-1">Max Risk / Trade</span>
-            <span className="text-base font-bold text-emerald-400">0.20% Equity</span>
-            <span className="text-[10px] text-slate-400 block mt-1">${(account.equity * 0.002).toFixed(2)} on $10k</span>
+            <span className="text-base font-bold text-emerald-400">{limits.maxRiskPerTradePercent.toFixed(2)}% Equity</span>
+            <span className="text-[10px] text-slate-400 block mt-1">${(account.equity * limits.maxRiskPerTradePercent / 100).toFixed(2)} at current equity</span>
           </div>
 
           <div className="p-3 rounded-lg bg-slate-950/60 border border-slate-800">
             <span className="text-[10px] text-slate-400 uppercase block mb-1">Daily Loss Limit</span>
             <span className={`text-base font-bold ${status.dailyLossLimitBreached ? 'text-rose-400' : 'text-slate-100'}`}>
-              1.00% Equity
+              {limits.dailyLossLimitPercent.toFixed(2)}% Equity
             </span>
             <span className="text-[10px] text-slate-400 block mt-1">Today: {status.todayDrawdownPercent.toFixed(2)}%</span>
           </div>
@@ -87,21 +87,21 @@ export const RiskCenterView: React.FC<RiskCenterViewProps> = ({
 
           <div className="p-3 rounded-lg bg-slate-950/60 border border-slate-800">
             <span className="text-[10px] text-slate-400 uppercase block mb-1">Daily Trade Cap</span>
-            <span className={`text-base font-bold ${status.todayTradesCount >= 8 ? 'text-rose-400' : 'text-slate-100'}`}>
-              8 Trades / Day
+            <span className={`text-base font-bold ${status.todayTradesCount >= limits.maxDailyTrades ? 'text-rose-400' : 'text-slate-100'}`}>
+              {limits.maxDailyTrades} Entries / Day
             </span>
-            <span className="text-[10px] text-slate-400 block mt-1">Today: {status.todayTradesCount} Trades</span>
+            <span className="text-[10px] text-slate-400 block mt-1">Today: {status.todayTradesCount} entries</span>
           </div>
 
           <div className="p-3 rounded-lg bg-slate-950/60 border border-slate-800">
             <span className="text-[10px] text-slate-400 uppercase block mb-1">Max Positions</span>
-            <span className="text-base font-bold text-slate-100">3 Simultaneous</span>
+            <span className="text-base font-bold text-slate-100">{limits.maxOpenPositions} Simultaneous</span>
             <span className="text-[10px] text-slate-400 block mt-1">{positions.length} Active Currently</span>
           </div>
 
           <div className="p-3 rounded-lg bg-slate-950/60 border border-slate-800">
             <span className="text-[10px] text-slate-400 uppercase block mb-1">Max Leverage</span>
-            <span className="text-base font-bold text-slate-100">3.00x Portfolio</span>
+            <span className="text-base font-bold text-slate-100">{limits.maxEffectiveLeverage.toFixed(2)}x Portfolio</span>
             <span className="text-[10px] text-slate-400 block mt-1">Prevents over-gearing</span>
           </div>
         </div>
@@ -168,7 +168,7 @@ export const RiskCenterView: React.FC<RiskCenterViewProps> = ({
         </div>
 
         <p className="text-xs text-slate-400 mb-4 font-sans leading-relaxed">
-          Verify how candidate trade proposals are evaluated under XM contract specifications. Demonstrates the strict rule: if the minimum broker lot (0.01) would exceed the 0.20% risk budget, the trade is rejected rather than forcing an unsafe lot.
+          This calculator uses local paper-simulation contract assumptions, not verified broker terms. Entries that exceed the configured risk budget at minimum size are rejected.
         </p>
 
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
@@ -256,7 +256,7 @@ export const RiskCenterView: React.FC<RiskCenterViewProps> = ({
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs font-mono pt-2 border-t border-emerald-500/20">
               <div>Risk Allocated: ${testValidation.calculatedRiskAmount?.toFixed(2)} (0.20% max)</div>
               <div>Leverage Impact: {testValidation.effectiveLeverageRatio}x (3.0x max)</div>
-              <div>Contract Math: Instrument-Aware XM Spec</div>
+              <div>Contract Math: Local simulation assumption</div>
             </div>
           ) : (
             <p className="text-xs font-sans text-rose-300 leading-snug pt-1">

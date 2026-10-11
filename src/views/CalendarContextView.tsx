@@ -16,18 +16,18 @@ export const CalendarContextView: React.FC<CalendarContextViewProps> = ({ events
         <div className="flex items-center gap-2 mb-2 pb-2 border-b border-slate-800">
           <Calendar className="w-5 h-5 text-blue-400" />
           <h2 className="text-xs font-bold text-white uppercase tracking-wider">
-            Macroeconomic Calendar & Volatility Blackout Engine (Phase 5 / Stage 11)
+            Synthetic Economic-Event Scenarios
           </h2>
         </div>
 
         <p className="text-xs text-slate-300 leading-relaxed mb-3">
-          The risk engine enforces an automated 30-minute pre-release and 15-minute post-release blackout around high-impact macroeconomic announcements to protect against abnormal spread widening, extreme slippage, and liquidity gaps.
+          The local risk gate blocks relevant high-impact event currencies for 30 minutes before and 15 minutes after the scheduled time. The event list below is synthetic and not a live economic calendar.
         </p>
 
         <div className="p-3 rounded-lg bg-slate-950/70 border border-slate-800/80 text-[11px] text-slate-400 flex items-start gap-2">
           <Info className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
           <span>
-            <strong>Data Source Truth:</strong> Events below are seeded as synthetic test scenarios to verify automated pre-event blackouts. In a live deployment, this connects to an authenticated financial calendar API (e.g. ForexFactory, Econoday).
+            <strong>Data source:</strong> These are seeded test scenarios. No live economic-calendar provider is connected, so blackout checks only cover these synthetic events.
           </span>
         </div>
       </div>
@@ -41,7 +41,8 @@ export const CalendarContextView: React.FC<CalendarContextViewProps> = ({ events
         <div className="space-y-3">
           {events.map(event => {
             const minutesUntil = Math.round((event.scheduledTime - now) / 60000);
-            const isBlackoutTriggered = event.impact === 'HIGH' && minutesUntil > 0 && minutesUntil <= 45;
+            const isBlackoutTriggered = event.impact === 'HIGH'
+              && ((minutesUntil > 0 && minutesUntil <= 30) || (minutesUntil <= 0 && minutesUntil >= -15));
 
             return (
               <div
@@ -88,7 +89,7 @@ export const CalendarContextView: React.FC<CalendarContextViewProps> = ({ events
                 {isBlackoutTriggered && (
                   <div className="mt-2 text-[10px] text-rose-300 flex items-center gap-1.5 font-sans pt-2 border-t border-rose-500/20">
                     <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0" />
-                    <span>Active Blackout: Automated strategy entries blocked for {event.currency} pairs.</span>
+                    <span>Active blackout: proposals involving {event.currency} are blocked in paper mode.</span>
                   </div>
                 )}
               </div>

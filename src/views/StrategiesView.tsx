@@ -28,7 +28,7 @@ export const StrategiesView: React.FC<StrategiesViewProps> = ({
           <span className="font-bold text-white block mb-0.5">
             Quantitative Research Status: In-Sample Hypothesis Baseline
           </span>
-          All candidate strategies operate under strict empirical suitability rules and out-of-sample forward paper testing. In alignment with non-negotiable rules, the engine is explicitly empowered to return <span className="font-mono font-bold text-amber-400">NO TRADE</span> whenever conditions, ADX strength, news proximity, or spread thresholds do not demonstrate edge.
+          These candidates are unvalidated hypotheses evaluated against synthetic local data. No out-of-sample results or demonstrated trading edge are available. The engine can return <span className="font-mono font-bold text-amber-400">NO TRADE</span> when its configured heuristics are not met.
         </div>
       </div>
 

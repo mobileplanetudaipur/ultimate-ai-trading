@@ -1,0 +1,9 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "resources": {
+      "../local-adapter/dist/mt5-connector/": "mt5-connector/",
+      "../docs/XM_ORDER_GUIDE.md": "instructions/XM_ORDER_GUIDE.md"
+    }
+  }
+}

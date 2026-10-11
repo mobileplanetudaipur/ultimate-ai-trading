@@ -32,16 +32,16 @@ export const MarketsView: React.FC<MarketsViewProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* Disclaimer on simulation feed */}
+      {/* Clearly identify the active market-data source */}
       <div className="p-3.5 rounded-xl border border-slate-800 bg-slate-900/50 flex items-center justify-between text-xs">
         <div className="flex items-center gap-2">
           <span className="font-semibold text-white">Market Telemetry Source:</span>
           <span className="text-slate-400 font-mono">
-            {activeQuote.provider} (Ticks: Local Deterministic Random Walk)
+            {activeQuote.provider}
           </span>
         </div>
         <span className="text-slate-400 font-mono text-[11px]">
-          XM/MT5 Standard Contract Specs Enforced
+          {activeQuote.freshness === 'broker' ? 'XM terminal quotes and M15 history · read-only' : activeQuote.freshness === 'simulated' ? 'Synthetic data · broker terms unverified' : 'Feed unavailable or stale · strategy gate closed'}
         </span>
       </div>
 
@@ -65,9 +65,9 @@ export const MarketsView: React.FC<MarketsViewProps> = ({
       />
 
       {/* Contract Specification Card */}
-      <div className="p-5 rounded-xl border border-slate-800 bg-slate-900/60 font-mono text-xs">
+      {spec && <div className="p-5 rounded-xl border border-slate-800 bg-slate-900/60 font-mono text-xs">
         <h3 className="text-xs font-bold text-white uppercase tracking-wider mb-3 pb-2 border-b border-slate-800">
-          XM / MT5 Standard Contract Specification — {spec.displayName}
+          Paper-Simulation Contract Assumption — {spec.displayName}
         </h3>
 
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 text-slate-300">
@@ -96,7 +96,7 @@ export const MarketsView: React.FC<MarketsViewProps> = ({
             <span className="font-bold text-slate-200">{spec.tradingHours}</span>
           </div>
         </div>
-      </div>
+      </div>}
     </div>
   );
 };

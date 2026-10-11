@@ -10,10 +10,11 @@ import {
   Lock,
   Menu
 } from 'lucide-react';
-import { AccountState, RiskLimits, RiskStatus } from '../types/trading';
+import { AccountState, OperatingMode, RiskLimits, RiskStatus } from '../types/trading';
 
 interface TopBarProps {
   activeViewTitle: string;
+  operatingMode: OperatingMode;
   account: AccountState;
   riskStatus: RiskStatus;
   riskLimits: RiskLimits;
@@ -21,11 +22,13 @@ interface TopBarProps {
   onToggleNavigation: () => void;
   feedLatencyMs: number;
   onTriggerKillSwitch: () => void;
+  onOpenModeSelector: () => void;
   onTogglePause: () => void;
 }
 
 export const TopBar: React.FC<TopBarProps> = ({
   activeViewTitle,
+  operatingMode,
   account,
   riskStatus,
   riskLimits,
@@ -33,8 +36,16 @@ export const TopBar: React.FC<TopBarProps> = ({
   onToggleNavigation,
   feedLatencyMs,
   onTriggerKillSwitch,
+  onOpenModeSelector,
   onTogglePause
 }) => {
+  const modePresentation = {
+    simulated: { label: 'Paper simulation', detail: `Synthetic delay (${feedLatencyMs}ms)`, className: 'text-amber-400' },
+    read_only: { label: 'Read-only', detail: 'Synthetic data · orders blocked', className: 'text-sky-400' },
+    demo_pending: { label: 'Demo execution blocked', detail: 'Strategy and recovery integration incomplete', className: 'text-amber-400' },
+    disconnected: { label: 'Disconnected', detail: 'Data stream stopped', className: 'text-slate-400' }
+  }[operatingMode];
+
   return (
     <header className="min-h-16 h-auto px-3 sm:px-6 py-2 border-b border-slate-800/80 bg-slate-900/95 flex flex-wrap items-center justify-between gap-3 sticky top-0 z-30">
       {/* Zone 1: View Breadcrumb & Truthful Status */}
@@ -52,9 +63,17 @@ export const TopBar: React.FC<TopBarProps> = ({
         <h1 className="truncate text-sm font-semibold text-white tracking-tight">{activeViewTitle}</h1>
         <span className="text-slate-600 text-xs" aria-hidden="true">/</span>
         <div className="flex min-w-0 items-center gap-1.5 sm:gap-2 text-xs text-slate-400">
-          <span className="whitespace-nowrap font-semibold text-amber-400 tracking-wide text-[11px]">Paper Simulation</span>
+          <button
+            type="button"
+            onClick={onOpenModeSelector}
+            aria-haspopup="dialog"
+            className={`whitespace-nowrap font-semibold tracking-wide text-[11px] focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 ${modePresentation.className}`}
+            title="Change operating mode"
+          >
+            {modePresentation.label}
+          </button>
           <span className="hidden text-slate-600 sm:inline" aria-hidden="true">·</span>
-          <span className="hidden whitespace-nowrap text-slate-400 text-xs font-mono sm:inline">Local Engine ({feedLatencyMs}ms)</span>
+          <span className="hidden whitespace-nowrap text-slate-400 text-xs font-mono sm:inline">{modePresentation.detail}</span>
         </div>
       </div>
 

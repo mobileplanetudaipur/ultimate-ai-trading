@@ -2,7 +2,7 @@
 
 export type OperatingMode = 'simulated' | 'read_only' | 'demo_pending' | 'disconnected';
 
-export type FeedFreshness = 'simulated' | 'stale' | 'unavailable';
+export type FeedFreshness = 'simulated' | 'broker' | 'stale' | 'unavailable';
 
 export interface MarketQuote {
   symbol: string;
@@ -199,6 +199,8 @@ export interface RiskStatus {
   isCooldownActive: boolean;
   cooldownEndsAt?: number;
   dailyStartingEquity: number;
+  sessionStartingEquity: number;
+  dailyPeriodKey?: string;
   todayRealizedPnl: number;
   todayTradesCount: number;
   todayDrawdownPercent: number;
@@ -235,11 +237,11 @@ export interface ExecutionMetrics {
   winningTrades: number;
   losingTrades: number;
   winRatePercent: number;
-  profitFactor: number;
+  profitFactor: number | null;
   netPnl: number;
   avgSlippagePips: number;
   orderFillRatePercent: number;
   rejectedOrdersCount: number;
-  sharpeRatioEstimate: number;
+  sharpeRatioEstimate: number | null;
   sampleConfidenceReliable: boolean; // false if trades < 30
 }

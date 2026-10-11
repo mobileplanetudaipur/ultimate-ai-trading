@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { X, Check, Info, Lock, ShieldCheck } from 'lucide-react';
 import { OperatingMode } from '../types/trading';
 
@@ -16,6 +16,20 @@ export const ModeSelectorModal: React.FC<ModeSelectorModalProps> = ({
   onSelectMode
 }) => {
   const [selected, setSelected] = useState<OperatingMode>(currentMode);
+
+  useEffect(() => {
+    if (isOpen) setSelected(currentMode);
+  }, [currentMode, isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [isOpen, onClose]);
 
   if (!isOpen) return null;
 
@@ -44,23 +58,23 @@ export const ModeSelectorModal: React.FC<ModeSelectorModalProps> = ({
       title: 'Read-Only Observation',
       badge: 'Monitoring Only',
       badgeColor: 'bg-sky-500/20 text-sky-400 border-sky-500/30',
-      description: 'Stream quotes, inspect indicator alignments and regime detection. All order execution is disabled.',
+      description: 'Inspect the same synthetic local quotes and indicators without enabling paper order submissions.',
       features: [
-        'Live candlestick & indicator rendering',
-        'Continuous regime & suitability evaluation',
+        'Synthetic candlestick & indicator rendering',
+        'Local regime & suitability evaluation',
         'Strictly zero order submissions permitted'
       ]
     },
     {
       id: 'demo_pending',
-      title: 'XM / MT5 Bridge Observation (Demo)',
-      badge: 'Bridge Disconnected',
+      title: 'Broker Bridge Observation',
+      badge: 'Blocked · Integration Incomplete',
       badgeColor: 'bg-amber-500/20 text-amber-400 border-amber-500/30',
-      description: 'Connects to local Windows MT5 demo terminal bridge on 127.0.0.1:8000 when active.',
+      description: 'A guarded XM demo-order boundary exists, but broker-fed strategy, portfolio reconciliation, and trading controls are not integrated.',
       features: [
-        'Requires local Windows MT5 terminal',
-        'Demo account reconciliation',
-        'Fail-closed if bridge is disconnected'
+        'No broker quote feed',
+        'No account or position query',
+        'Automated demo entries remain blocked'
       ]
     },
     {
@@ -68,11 +82,11 @@ export const ModeSelectorModal: React.FC<ModeSelectorModalProps> = ({
       title: 'Disconnected / Standby',
       badge: 'Engines Suspended',
       badgeColor: 'bg-slate-500/20 text-slate-400 border-slate-500/30',
-      description: 'Completely suspend all tick streaming, signal generation, and local engines.',
+      description: 'Stop synthetic market updates and block all new entries. Existing local paper state remains a simulation.',
       features: [
-        'Tick streamer paused',
-        'All automated entries stopped',
-        'Safe maintenance state'
+        'Synthetic tick stream paused',
+        'All new entries blocked',
+        'Existing paper state remains local'
       ]
     }
   ];
@@ -83,10 +97,18 @@ export const ModeSelectorModal: React.FC<ModeSelectorModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="mode-selector-title"
+      aria-describedby="mode-selector-description"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
+    >
       <div className="bg-slate-900 border border-slate-800 rounded-xl max-w-xl w-full p-6 shadow-2xl relative">
         <button
+          type="button"
           onClick={onClose}
+          aria-label="Close operating mode selector"
           className="absolute top-4 right-4 text-slate-400 hover:text-white p-1 rounded-md hover:bg-slate-800"
         >
           <X className="w-5 h-5" />
@@ -94,20 +116,22 @@ export const ModeSelectorModal: React.FC<ModeSelectorModalProps> = ({
 
         <div className="flex items-center gap-2 mb-2">
           <Info className="w-5 h-5 text-blue-400" />
-          <h2 className="text-base font-bold text-white">Select Operating Mode</h2>
+          <h2 id="mode-selector-title" className="text-base font-bold text-white">Select Operating Mode</h2>
         </div>
-        <p className="text-xs text-slate-400 mb-4 leading-relaxed">
-          Rule 1: Live real-money trading is permanently disabled. Only simulated paper execution and demo observation modes are permitted.
+        <p id="mode-selector-description" className="text-xs text-slate-400 mb-4 leading-relaxed">
+        This build supports local simulation and a separate, manually confirmed demo order ticket. Strategy automation is not connected to broker orders; live order activation is locked pending separate release approval.
         </p>
 
         <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-1">
           {modes.map(mode => {
             const isSelected = selected === mode.id;
             return (
-              <div
+              <button
+                type="button"
                 key={mode.id}
                 onClick={() => setSelected(mode.id)}
-                className={`p-3.5 rounded-lg border transition-all cursor-pointer ${
+                aria-pressed={isSelected}
+                className={`w-full text-left p-3.5 rounded-lg border transition-colors cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 ${
                   isSelected
                     ? 'border-blue-500 bg-blue-950/30 ring-1 ring-blue-500/50'
                     : 'border-slate-800 bg-slate-950/40 hover:border-slate-700 hover:bg-slate-800/40'
@@ -132,7 +156,7 @@ export const ModeSelectorModal: React.FC<ModeSelectorModalProps> = ({
                     <li key={i}>{feat}</li>
                   ))}
                 </ul>
-              </div>
+              </button>
             );
           })}
         </div>

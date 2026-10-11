@@ -1,5 +1,4 @@
 import { Candle, FeedFreshness, MarketQuote, OperatingMode } from '../types/trading';
-import { XM_MT5_INSTRUMENT_SPECS } from './brokerGateway';
 
 export interface InstrumentConfig {
   symbol: string;
@@ -73,6 +72,7 @@ export class MarketDataService {
   private isDegraded: boolean = false;
   private isOffline: boolean = false;
   private currentMode: OperatingMode = 'simulated';
+  private brokerFeedActive = false;
 
   constructor() {
     this.initializeData();
@@ -81,6 +81,21 @@ export class MarketDataService {
   public setOperatingMode(mode: OperatingMode) {
     this.currentMode = mode;
     this.updateFreshnessState();
+  }
+
+  public setBrokerFeedActive(active: boolean) {
+    this.brokerFeedActive = active;
+    if (active) {
+      this.quotes.clear();
+      this.candles.clear();
+    }
+  }
+
+  public replaceBrokerData(quotes: MarketQuote[], candles: Map<string, Candle[]>) {
+    this.brokerFeedActive = true;
+    this.quotes = new Map(quotes.map(quote => [quote.symbol, quote]));
+    this.candles = new Map(candles);
+    for (const quote of quotes) this.notifyListeners(quote);
   }
 
   public setDegradedState(degraded: boolean) {
@@ -102,6 +117,16 @@ export class MarketDataService {
       : 'simulated';
 
     for (const [symbol, quote] of this.quotes.entries()) {
+      if (this.brokerFeedActive) {
+        const updatedQuote: MarketQuote = {
+          ...quote,
+          freshness: this.currentMode === 'disconnected' || this.isOffline ? 'unavailable' : quote.freshness,
+          isStale: this.currentMode === 'disconnected' || this.isOffline || quote.isStale
+        };
+        this.quotes.set(symbol, updatedQuote);
+        this.notifyListeners(updatedQuote);
+        continue;
+      }
       const updatedQuote: MarketQuote = {
         ...quote,
         freshness,
@@ -120,7 +145,7 @@ export class MarketDataService {
       let currentPrice = inst.basePrice;
       const intervalMs = 15 * 60 * 1000;
 
-      for (let i = 80; i >= 0; i--) {
+      for (let i = 96; i >= 0; i--) {
         const time = now - i * intervalMs;
         const change = (Math.random() - 0.49) * (inst.volatilityPerTick * 8);
         const open = currentPrice;
@@ -143,6 +168,7 @@ export class MarketDataService {
       this.candles.set(inst.symbol, instCandles);
 
       const lastCandle = instCandles[instCandles.length - 1];
+      const recent24h = instCandles.slice(-96);
       const spreadPips = inst.typicalSpreadPips;
       const halfSpread = (spreadPips / inst.pipMultiplier) / 2;
       const bid = lastCandle.close - halfSpread;
@@ -154,9 +180,9 @@ export class MarketDataService {
         ask: Number(ask.toFixed(inst.digits)),
         spreadPips,
         last: lastCandle.close,
-        high24h: Math.max(...instCandles.slice(-32).map(c => c.high)),
-        low24h: Math.min(...instCandles.slice(-32).map(c => c.low)),
-        volume24h: instCandles.slice(-32).reduce((sum, c) => sum + c.volume, 0),
+        high24h: Math.max(...instCandles.map(c => c.high)),
+        low24h: Math.min(...instCandles.map(c => c.low)),
+        volume24h: recent24h.reduce((sum, c) => sum + c.volume, 0),
         change24hPercent: Number((((lastCandle.close - instCandles[0].open) / instCandles[0].open) * 100).toFixed(2)),
         digits: inst.digits,
         pipMultiplier: inst.pipMultiplier,
@@ -175,6 +201,7 @@ export class MarketDataService {
     if (this.intervalId) return;
 
     this.intervalId = setInterval(() => {
+      if (this.brokerFeedActive) return;
       if (this.isOffline || this.currentMode === 'disconnected') return;
 
       const randomIndex = Math.floor(Math.random() * SUPPORTED_INSTRUMENTS.length);

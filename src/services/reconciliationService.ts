@@ -27,21 +27,29 @@ export class ReconciliationService {
 
     // 1. Broker Gateway check
     if (!brokerStatus.isConnected) {
-      discrepancies.push('Broker Gateway: XM / Windows MT5 bridge is disconnected. Real broker comparison is unavailable.');
+      discrepancies.push('Broker adapter is not implemented. Broker-side comparison is unavailable.');
     }
 
     // 2. Audit local internal consistency
     let calculatedMarginUsed = 0;
     let totalUnrealizedPnl = 0;
+    let hasUnsupportedInstrument = false;
 
     for (const pos of localPositions) {
       const spec = brokerGateway.getInstrumentSpec(pos.symbol);
+      if (!spec) {
+        hasUnsupportedInstrument = true;
+        discrepancies.push(`Unsupported instrument '${pos.symbol}': local margin cannot be calculated.`);
+        totalUnrealizedPnl += pos.unrealizedPnl;
+        continue;
+      }
       const positionMargin = (pos.sizeLots * spec.contractSize * pos.entryPrice) / localAccount.leverage;
       calculatedMarginUsed += positionMargin;
       totalUnrealizedPnl += pos.unrealizedPnl;
     }
 
     const calculatedEquity = Number((localAccount.balance + totalUnrealizedPnl).toFixed(2));
+    if (hasUnsupportedInstrument) calculatedMarginUsed = Math.max(calculatedMarginUsed, calculatedEquity);
     const calculatedFreeMargin = Math.max(0, Number((calculatedEquity - calculatedMarginUsed).toFixed(2)));
     const calculatedMarginLevel = calculatedMarginUsed > 0
       ? Number(((calculatedEquity / calculatedMarginUsed) * 100).toFixed(1))
@@ -53,7 +61,7 @@ export class ReconciliationService {
       discrepancies.push(`Ledger Discrepancy: Calculated equity ($${calculatedEquity}) differs from state equity ($${localAccount.equity}) by $${equityMathDelta.toFixed(2)}.`);
     }
 
-    const isConsistent = discrepancies.length <= 1; // 1 is expected while MT5 bridge is disconnected
+    const isConsistent = discrepancies.length === (brokerStatus.isConnected ? 0 : 1);
 
     const updatedAccount: AccountState = {
       ...localAccount,
@@ -80,9 +88,7 @@ export class ReconciliationService {
       calculatedEquity,
       recordedEquity: localAccount.equity,
       marginHeadroomValid: calculatedFreeMargin > calculatedMarginUsed * 0.2,
-      notes: brokerStatus.isConnected
-        ? 'Broker connection verified'
-        : 'Operating in self-contained Paper Simulation mode. No broker credentials required.'
+      notes: 'Local paper-ledger arithmetic only. No broker-side positions or balances were queried.'
     };
 
     return { updatedAccount, report };

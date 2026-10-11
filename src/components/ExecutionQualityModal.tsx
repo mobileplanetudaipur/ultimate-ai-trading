@@ -27,10 +27,10 @@ export const ExecutionQualityModal: React.FC<ExecutionQualityModalProps> = ({
 
         <div className="flex items-center gap-2 mb-2">
           <BarChart3 className="w-5 h-5 text-blue-400" />
-          <h2 className="text-lg font-bold text-white">Execution Quality & Health Monitor (Stage 12)</h2>
+          <h2 className="text-lg font-bold text-white">Paper Execution Metrics</h2>
         </div>
         <p className="text-xs text-slate-400 mb-4 leading-relaxed">
-          Continuous statistical auditing of slippage, fill rate, sample sizes, and drawdown limits. Never infers future performance from past results.
+          These figures come from the local simulator only. They are not broker execution results or evidence of future performance.
         </p>
 
         {/* Statistical Sample Size Caution Banner */}
@@ -57,7 +57,7 @@ export const ExecutionQualityModal: React.FC<ExecutionQualityModalProps> = ({
           <div className="bg-slate-950/60 border border-slate-800 p-3 rounded-lg">
             <span className="text-[10px] text-slate-500 uppercase block mb-1">Profit Factor</span>
             <span className="text-base font-bold text-slate-200">
-              {metrics.profitFactor > 0 ? metrics.profitFactor : '—'}
+              {metrics.profitFactor === null ? 'N/A' : metrics.profitFactor}
             </span>
             <span className="text-[10px] text-slate-500 block">Gross Gain / Loss</span>
           </div>
@@ -83,9 +83,9 @@ export const ExecutionQualityModal: React.FC<ExecutionQualityModalProps> = ({
           </div>
 
           <div className="bg-slate-950/60 border border-slate-800 p-3 rounded-lg">
-            <span className="text-[10px] text-slate-500 uppercase block mb-1">Est. Sharpe Ratio</span>
-            <span className="text-base font-bold text-slate-200">{metrics.sharpeRatioEstimate || 'N/A'}</span>
-            <span className="text-[10px] text-slate-500 block">Annualized</span>
+            <span className="text-[10px] text-slate-500 uppercase block mb-1">Sharpe Ratio</span>
+            <span className="text-base font-bold text-slate-200">N/A</span>
+            <span className="text-[10px] text-slate-500 block">No time-series data</span>
           </div>
         </div>
 

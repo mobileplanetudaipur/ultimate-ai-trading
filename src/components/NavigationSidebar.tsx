@@ -47,14 +47,21 @@ export const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
   riskStatus,
   openPositionsCount
 }) => {
+  const operatingState = {
+    simulated: { label: 'SIMULATED', className: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20', detail: 'Local paper simulation only. No broker data or orders are connected.' },
+    read_only: { label: 'READ-ONLY', className: 'bg-sky-500/10 text-sky-400 border-sky-500/20', detail: 'Synthetic local data only. New order entries are blocked.' },
+    demo_pending: { label: 'MANUAL DEMO TICKET · GATED', className: 'bg-amber-500/10 text-amber-400 border-amber-500/20', detail: 'Windows manual order ticket only; strategies are not routed and live orders remain locked.' },
+    disconnected: { label: 'DISCONNECTED', className: 'bg-slate-700/50 text-slate-300 border-slate-600/50', detail: 'Synthetic stream stopped. New order entries are blocked.' }
+  }[operatingMode];
+
   const navItems: { id: ActiveNavTab; label: string; icon: React.FC<{ className?: string }>; badge?: string | number }[] = [
     { id: 'overview', label: 'Overview', icon: LayoutDashboard },
-    { id: 'markets', label: 'Markets & Telemetry', icon: TrendingUp },
+    { id: 'markets', label: 'Markets & Synthetic Data', icon: TrendingUp },
     { id: 'strategies', label: 'Strategies & Signals', icon: Brain },
     { id: 'portfolio', label: 'Portfolio & Orders', icon: Briefcase, badge: openPositionsCount > 0 ? openPositionsCount : undefined },
     { id: 'risk', label: 'Risk Center', icon: ShieldCheck, badge: riskStatus.isCooldownActive ? 'LOCK' : undefined },
     { id: 'research', label: 'Research & Hypotheses', icon: FlaskConical },
-    { id: 'shadow', label: 'Shadow & MT5 Gateway', icon: Eye },
+    { id: 'shadow', label: 'Broker Integration Status', icon: Eye },
     { id: 'calendar', label: 'Macro Blackout Calendar', icon: Calendar },
     { id: 'audit', label: 'Audit & Checkpoints', icon: FileText },
     { id: 'settings', label: 'Connections & Settings', icon: Settings }
@@ -137,20 +144,20 @@ export const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
       <div className="p-3 border-t border-slate-800/80 bg-slate-950/40 text-xs font-mono space-y-2">
         <div className="flex items-center justify-between text-[11px]">
           <span className="text-slate-400">OPERATING STATE:</span>
-          <span className="px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] font-bold">
-            PAPER SIMULATION
+          <span className={`px-1.5 py-0.5 rounded border text-[10px] font-bold ${operatingState.className}`}>
+            {operatingState.label}
           </span>
         </div>
 
         <div className="flex items-center justify-between text-[11px]">
-          <span className="text-slate-400">MT5 BRIDGE:</span>
+          <span className="text-slate-400">BROKER ADAPTER:</span>
           <span className="text-slate-400 text-[10px]">
-            DISCONNECTED
+            MANUAL DEMO · WINDOWS
           </span>
         </div>
 
         <div className="pt-1 border-t border-slate-800/60 text-[10px] text-slate-400 leading-tight">
-          Live execution disabled by design per Rule 1. Zero real capital at risk.
+          {operatingState.detail}
         </div>
       </div>
       </aside>

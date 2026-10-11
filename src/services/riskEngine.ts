@@ -1,4 +1,4 @@
-import { AccountState, EconomicEvent, MarketQuote, OrderRecord, PositionRecord, RiskLimits, RiskStatus } from '../types/trading';
+import { AccountState, EconomicEvent, MarketQuote, OperatingMode, OrderRecord, PositionRecord, RiskLimits, RiskStatus } from '../types/trading';
 import { brokerGateway } from './brokerGateway';
 
 export interface RiskValidationResult {
@@ -11,6 +11,8 @@ export interface RiskValidationResult {
 }
 
 export class RiskEngine {
+  private operatingMode: OperatingMode = 'simulated';
+
   private limits: RiskLimits = {
     maxRiskPerTradePercent: 0.20, // Baseline: Strict 0.20% reference equity risk per trade
     dailyLossLimitPercent: 1.00, // Baseline: Strict 1.00% daily loss ceiling
@@ -29,6 +31,8 @@ export class RiskEngine {
     consecutiveLossCount: 0,
     isCooldownActive: false,
     dailyStartingEquity: 10000,
+    sessionStartingEquity: 10000,
+    dailyPeriodKey: new Date().toISOString().slice(0, 10),
     todayRealizedPnl: 0,
     todayTradesCount: 0,
     todayDrawdownPercent: 0,
@@ -39,6 +43,7 @@ export class RiskEngine {
 
   constructor(initialEquity: number = 10000) {
     this.status.dailyStartingEquity = initialEquity;
+    this.status.sessionStartingEquity = initialEquity;
   }
 
   public getLimits(): RiskLimits {
@@ -46,6 +51,7 @@ export class RiskEngine {
   }
 
   public getStatus(): RiskStatus {
+    this.ensureCurrentDay(this.status.dailyStartingEquity + this.status.todayRealizedPnl);
     // Check if cooldown has naturally elapsed
     if (this.status.isCooldownActive && this.status.cooldownEndsAt) {
       if (Date.now() >= this.status.cooldownEndsAt) {
@@ -57,7 +63,15 @@ export class RiskEngine {
   }
 
   public restoreStatus(status: RiskStatus) {
-    this.status = { ...status };
+    this.status = {
+      ...status,
+      dailyPeriodKey: status.dailyPeriodKey ?? '',
+      sessionStartingEquity: status.sessionStartingEquity ?? status.dailyStartingEquity
+    };
+  }
+
+  public setOperatingMode(mode: OperatingMode) {
+    this.operatingMode = mode;
   }
 
   public setTradingPaused(paused: boolean, reason?: string) {
@@ -79,14 +93,17 @@ export class RiskEngine {
     this.status.pauseReason = undefined;
   }
 
-  public recordCompletedTrade(netPnl: number) {
-    this.status.todayRealizedPnl += netPnl;
+  public recordTradeEntry() {
+    this.ensureCurrentDay(this.status.dailyStartingEquity + this.status.todayRealizedPnl);
     this.status.todayTradesCount += 1;
-
-    // Check daily trade cap
     if (this.status.todayTradesCount >= this.limits.maxDailyTrades) {
       this.status.dailyTradeCapBreached = true;
     }
+  }
+
+  public recordCompletedTrade(netPnl: number) {
+    this.ensureCurrentDay(this.status.dailyStartingEquity + this.status.todayRealizedPnl);
+    this.status.todayRealizedPnl += netPnl;
 
     if (netPnl < 0) {
       this.status.consecutiveLossCount += 1;
@@ -94,7 +111,7 @@ export class RiskEngine {
         this.status.isCooldownActive = true;
         this.status.cooldownEndsAt = Date.now() + this.limits.cooldownPeriodMinutes * 60 * 1000;
       }
-    } else {
+    } else if (netPnl > 0) {
       // Natural reset on genuine winning completed trade
       this.status.consecutiveLossCount = 0;
     }
@@ -112,6 +129,19 @@ export class RiskEngine {
     }
   }
 
+  private ensureCurrentDay(currentEquity: number) {
+    const currentDay = new Date().toISOString().slice(0, 10);
+    if (this.status.dailyPeriodKey === currentDay) return;
+
+    this.status.dailyPeriodKey = currentDay;
+    this.status.dailyStartingEquity = Math.max(1, currentEquity);
+    this.status.todayRealizedPnl = 0;
+    this.status.todayTradesCount = 0;
+    this.status.todayDrawdownPercent = 0;
+    this.status.dailyLossLimitBreached = false;
+    this.status.dailyTradeCapBreached = false;
+  }
+
   /**
    * Deterministic pre-trade validation gate (Phase 3)
    * Enforces 0.20% max risk, 1.00% daily loss, 8 trades/day, 5-loss/30m lock, 3x leverage,
@@ -127,6 +157,31 @@ export class RiskEngine {
     entryPrice: number,
     upcomingEvents?: EconomicEvent[]
   ): RiskValidationResult {
+    this.ensureCurrentDay(account.equity);
+
+    if (this.operatingMode !== 'simulated') {
+      const blockedModes: Record<Exclude<OperatingMode, 'simulated'>, { rule: string; message: string }> = {
+        read_only: {
+          rule: 'READ_ONLY_MODE',
+          message: 'Read-only observation mode does not permit paper order submissions.'
+        },
+        demo_pending: {
+          rule: 'BROKER_ADAPTER_UNAVAILABLE',
+          message: 'Demo execution remains blocked because the guarded XM order boundary is not connected to broker-fed strategies, durable portfolio reconciliation, and operator controls.'
+        },
+        disconnected: {
+          rule: 'SYSTEM_DISCONNECTED',
+          message: 'The system is disconnected. Order entries are blocked.'
+        }
+      };
+      const blocked = blockedModes[this.operatingMode];
+      return {
+        isApproved: false,
+        ruleBlocked: blocked.rule,
+        rejectionMessage: blocked.message
+      };
+    }
+
     // 1. Emergency Kill Switch Check
     if (this.status.killSwitchTriggered) {
       return {
@@ -158,12 +213,32 @@ export class RiskEngine {
     }
 
     // 4. Daily Trade Cap Check (8 trades per day max)
-    if (this.status.dailyTradeCapBreached || this.status.todayTradesCount >= this.limits.maxDailyTrades) {
+    const pendingEntryCount = pendingOrders.filter(order =>
+      order.status === 'PREPARED' || order.status === 'RISK_APPROVED' || order.status === 'SUBMITTED_LOCAL'
+    ).length;
+    if (
+      this.status.dailyTradeCapBreached
+      || this.status.todayTradesCount + pendingEntryCount >= this.limits.maxDailyTrades
+    ) {
+      const countedTrades = this.status.todayTradesCount + pendingEntryCount;
       return {
         isApproved: false,
         ruleBlocked: 'DAILY_TRADE_CAP_EXCEEDED',
-        rejectionMessage: `Daily trade cap reached (${this.status.todayTradesCount}/${this.limits.maxDailyTrades} trades today). Entry blocked to prevent overtrading.`
+        rejectionMessage: `Daily trade cap reached (${countedTrades}/${this.limits.maxDailyTrades} entries today or pending). Entry blocked to prevent overtrading.`
       };
+    }
+
+    if (this.limits.enforceWeekendClosure) {
+      const quoteDate = new Date(quote.timestamp);
+      const weekday = quoteDate.getUTCDay();
+      const utcHour = quoteDate.getUTCHours();
+      if (weekday === 0 || weekday === 6 || (weekday === 5 && utcHour >= 20)) {
+        return {
+          isApproved: false,
+          ruleBlocked: 'MARKET_CLOSED',
+          rejectionMessage: 'The conservative UTC weekend/pre-close paper-trading lock is active. Broker-specific trading hours are not verified.'
+        };
+      }
     }
 
     // 5. Daily Loss Limit Check (1.00% max daily downside)
@@ -176,9 +251,9 @@ export class RiskEngine {
     }
 
     // 6. Overall Portfolio Drawdown Check (5.00% max overall downside)
-    const overallDrop = this.status.dailyStartingEquity - account.equity;
+    const overallDrop = this.status.sessionStartingEquity - account.equity;
     if (overallDrop > 0) {
-      const overallDrawdownPercent = (overallDrop / this.status.dailyStartingEquity) * 100;
+      const overallDrawdownPercent = (overallDrop / this.status.sessionStartingEquity) * 100;
       if (overallDrawdownPercent >= this.limits.maxOverallDrawdownPercent) {
         return {
           isApproved: false,
@@ -189,35 +264,68 @@ export class RiskEngine {
     }
 
     // 7. Data Feed Health & Stale Quote Check (Fail-closed)
-    if (quote.freshness === 'unavailable' || quote.isStale || quote.latencyMs > 2000) {
+    if (
+      quote.freshness === 'unavailable'
+      || quote.isStale
+      || quote.latencyMs > 2000
+      || Date.now() - quote.timestamp > 15000
+      || ![quote.bid, quote.ask, quote.last, quote.spreadPips, quote.timestamp, entryPrice].every(Number.isFinite)
+      || quote.bid <= 0
+      || quote.ask < quote.bid
+      || quote.pipMultiplier <= 0
+      || quote.spreadPips < 0
+    ) {
       return {
         isApproved: false,
         ruleBlocked: 'FEED_UNRELIABLE',
-        rejectionMessage: `Market data feed is ${quote.freshness} (latency: ${quote.latencyMs}ms). Order rejected for execution safety.`
+        rejectionMessage: `Market data is stale, unavailable, or invalid (freshness: ${quote.freshness}, latency: ${quote.latencyMs}ms). Order rejected for execution safety.`
       };
     }
 
-    // 8. Economic News Event Blackout Check (30m pre-event window)
+    const spec = brokerGateway.getInstrumentSpec(quote.symbol);
+    if (!spec) {
+      return {
+        isApproved: false,
+        ruleBlocked: 'UNSUPPORTED_INSTRUMENT',
+        rejectionMessage: `No paper-simulation contract assumptions are configured for '${quote.symbol}'.`
+      };
+    }
+    if (account.currency !== 'USD' || account.equity <= 0 || account.leverage <= 0) {
+      return {
+        isApproved: false,
+        ruleBlocked: 'UNSUPPORTED_ACCOUNT_CONFIGURATION',
+        rejectionMessage: 'Paper risk sizing requires a positive-equity USD account with positive leverage.'
+      };
+    }
+
+    // 8. Synthetic high-impact event blackout (30m before and 15m after)
     if (this.limits.enforceNewsBlackout && upcomingEvents && upcomingEvents.length > 0) {
-      const highImpactEvents = upcomingEvents.filter(e => e.impact === 'HIGH');
+      const quoteCurrencies = quote.symbol.split('/');
+      const highImpactEvents = upcomingEvents.filter(e =>
+        e.impact === 'HIGH' && quoteCurrencies.includes(e.currency)
+      );
       for (const evt of highImpactEvents) {
         const minutesAway = (evt.scheduledTime - quote.timestamp) / 60000;
-        if (minutesAway > 0 && minutesAway <= 30) {
+        if ((minutesAway > 0 && minutesAway <= 30) || (minutesAway <= 0 && minutesAway >= -15)) {
+          const window = minutesAway > 0 ? 'pre-release' : 'post-release';
           return {
             isApproved: false,
             ruleBlocked: 'NEWS_BLACKOUT_ACTIVE',
-            rejectionMessage: `Tier-1 event '${evt.title}' scheduled in ${Math.round(minutesAway)}m. Pre-event blackout window active (30m).`
+            rejectionMessage: `High-impact ${evt.currency} event '${evt.title}' is in its ${window} blackout window.`
           };
         }
       }
     }
 
     // 9. Max Open Positions Cap (Max 3 positions)
-    if (openPositions.length >= this.limits.maxOpenPositions) {
+    const pendingEntries = pendingOrders.filter(order =>
+      order.status === 'PREPARED' || order.status === 'RISK_APPROVED' || order.status === 'SUBMITTED_LOCAL'
+    );
+    if (openPositions.length + pendingEntries.length >= this.limits.maxOpenPositions) {
       return {
         isApproved: false,
         ruleBlocked: 'MAX_POSITIONS_REACHED',
-        rejectionMessage: `Maximum concurrent positions reached (${openPositions.length}/${this.limits.maxOpenPositions}).`
+        rejectionMessage: `Maximum concurrent or pending entries reached (${openPositions.length + pendingEntries.length}/${this.limits.maxOpenPositions}).`
       };
     }
 
@@ -265,7 +373,6 @@ export class RiskEngine {
     }
 
     // 11. Instrument-Aware Position Sizing using Exact Contract Specifications
-    const spec = brokerGateway.getInstrumentSpec(quote.symbol);
     const contractSize = spec.contractSize; // 100,000 for FX, 100 for Gold, 1 for BTC
 
     // Risk budget: strictly 0.20% of account equity
@@ -291,7 +398,7 @@ export class RiskEngine {
     const worstCaseLossAtMinLot = minVol * lossPerLot;
 
     // Reject if even the minimum 0.01 lot exceeds the 0.20% risk budget
-    if (worstCaseLossAtMinLot > riskBudgetUsd * 1.05) {
+    if (worstCaseLossAtMinLot > riskBudgetUsd) {
       return {
         isApproved: false,
         ruleBlocked: 'LOT_SIZE_EXCEEDS_MAX_RISK',
@@ -300,12 +407,15 @@ export class RiskEngine {
     }
 
     // Add tiny epsilon to handle floating point truncation before floor
-    const steps = Math.floor((rawLots + 1e-9) / spec.volumeStepLots);
+    const steps = Math.min(
+      Math.floor((rawLots + 1e-9) / spec.volumeStepLots),
+      Math.floor(spec.maxVolumeLots / spec.volumeStepLots)
+    );
     const calculatedLotSize = Number((Math.max(spec.minVolumeLots, steps * spec.volumeStepLots)).toFixed(2));
 
     // Re-verify actual worst-case risk at calculated lot
     const actualRiskAmount = Number((calculatedLotSize * lossPerLot).toFixed(2));
-    if (actualRiskAmount > riskBudgetUsd * 1.05) {
+    if (actualRiskAmount > riskBudgetUsd) {
       return {
         isApproved: false,
         ruleBlocked: 'RISK_BUDGET_EXCEEDED',
@@ -317,10 +427,31 @@ export class RiskEngine {
     let currentOpenExposureUsd = 0;
     for (const pos of openPositions) {
       const posSpec = brokerGateway.getInstrumentSpec(pos.symbol);
+      if (!posSpec) {
+        return {
+          isApproved: false,
+          ruleBlocked: 'UNSUPPORTED_INSTRUMENT',
+          rejectionMessage: `Open paper position uses unsupported instrument '${pos.symbol}'.`
+        };
+      }
       const posValUsd = posSpec.baseCurrency === 'USD'
         ? pos.sizeLots * posSpec.contractSize
         : pos.sizeLots * posSpec.contractSize * pos.currentPrice;
       currentOpenExposureUsd += posValUsd;
+    }
+    for (const pendingOrder of pendingEntries) {
+      const pendingSpec = brokerGateway.getInstrumentSpec(pendingOrder.symbol);
+      if (!pendingSpec) {
+        return {
+          isApproved: false,
+          ruleBlocked: 'UNSUPPORTED_INSTRUMENT',
+          rejectionMessage: `Pending paper order uses unsupported instrument '${pendingOrder.symbol}'.`
+        };
+      }
+      const pendingExposureUsd = pendingSpec.baseCurrency === 'USD'
+        ? pendingOrder.requestedSizeLots * pendingSpec.contractSize
+        : pendingOrder.requestedSizeLots * pendingSpec.contractSize * pendingOrder.requestedPrice;
+      currentOpenExposureUsd += pendingExposureUsd;
     }
     const newPositionValueUsd = spec.baseCurrency === 'USD'
       ? calculatedLotSize * contractSize

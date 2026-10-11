@@ -304,7 +304,7 @@ export const MarketChart: React.FC<MarketChartProps> = ({
             );
           })}
 
-          {/* Current Live Price Line */}
+          {/* Current simulated price line */}
           <line
             x1="0"
             y1={getY(quote.last)}
@@ -316,7 +316,7 @@ export const MarketChart: React.FC<MarketChartProps> = ({
           />
         </svg>
 
-        {/* Live Floating Price Pill */}
+        {/* Floating price label */}
         <div
           className="absolute right-2 px-2 py-0.5 rounded bg-slate-900 border border-slate-700 text-xs font-mono font-bold text-white shadow-md pointer-events-none"
           style={{ top: `${Math.max(8, Math.min(250, getY(quote.last) - 12))}px` }}

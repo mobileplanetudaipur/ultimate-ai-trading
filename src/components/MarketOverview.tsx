@@ -61,13 +61,17 @@ export const MarketOverview: React.FC<MarketOverviewProps> = ({
               <div className="text-sm font-mono font-bold text-slate-100">
                 {formatPrice(q.last, q.digits)}
               </div>
-              <div className="flex items-center justify-between mt-1 text-[10px] font-mono text-slate-400">
-                <span>Spr: {q.spreadPips.toFixed(1)}p</span>
-                <span className={`text-[9px] px-1 rounded ${
-                  q.isStale ? 'bg-rose-500/20 text-rose-300' : 'text-slate-500'
-                }`}>
-                  {q.latencyMs}ms
-                </span>
+              <div className="flex items-center justify-between mt-1 text-[10px] font-mono">
+                <span className="text-slate-400">Spr: {q.spreadPips.toFixed(1)}p</span>
+                {q.isStale ? (
+                  <span className="text-[9px] px-1 rounded bg-rose-950 text-rose-200">
+                    {q.latencyMs}ms {q.freshness === 'broker' ? 'XM' : 'sim'}
+                  </span>
+                ) : (
+                  <span className="text-[9px] px-1 rounded text-slate-400">
+                    {q.latencyMs}ms {q.freshness === 'broker' ? 'XM' : 'sim'}
+                  </span>
+                )}
               </div>
             </button>
           );

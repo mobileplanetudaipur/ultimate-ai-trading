@@ -49,7 +49,7 @@ export const Header: React.FC<HeaderProps> = ({
   const getModeBadge = () => {
     switch (operatingMode) {
       case 'demo_pending':
-        return { label: 'MT5 BRIDGE DISCONNECTED', bg: 'bg-amber-500/20 text-amber-400 border-amber-500/40', dot: 'bg-amber-500' };
+        return { label: 'MANUAL DEMO TICKET · LOCKED BY DEFAULT', bg: 'bg-amber-500/20 text-amber-400 border-amber-500/40', dot: 'bg-amber-500' };
       case 'simulated':
         return { label: 'LOCAL PAPER ENGINE', bg: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40', dot: 'bg-emerald-500' };
       case 'read_only':
@@ -80,7 +80,7 @@ export const Header: React.FC<HeaderProps> = ({
       {/* Top Banner Warning if Kill Switch or Cooldown is active */}
       {riskStatus.killSwitchTriggered && (
         <div className="bg-red-600 px-4 py-2 text-center text-xs font-bold uppercase tracking-wider text-white flex items-center justify-center gap-2">
-          <ShieldAlert className="w-4 h-4 animate-bounce" />
+          <ShieldAlert className="w-4 h-4" />
           EMERGENCY KILL SWITCH TRIGGERED — ALL AUTOMATED ENTRIES ARE STRICTLY HALTED
         </div>
       )}
@@ -113,7 +113,7 @@ export const Header: React.FC<HeaderProps> = ({
               <span className="flex items-center gap-1">
                 <Radio className="w-3 h-3 text-slate-500" />
                 <span className={feedBadge.color}>{feedBadge.label}</span>
-                <span className="text-slate-500 font-mono">({feedLatencyMs}ms)</span>
+                <span className="text-slate-500 font-mono">(simulated {feedLatencyMs}ms)</span>
               </span>
               <span className="text-slate-600">•</span>
               <span className="text-slate-400 text-[11px]">Strict Risk Engine Active</span>

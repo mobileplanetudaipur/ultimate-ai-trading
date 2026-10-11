@@ -1,8 +1,9 @@
 import { RiskEngine } from '../services/riskEngine';
-import { MarketQuote, AccountState, EconomicEvent } from '../types/trading';
+import { MarketQuote, AccountState, EconomicEvent, OrderRecord, ClosedTradeRecord } from '../types/trading';
 import { OrderLifecycleManager } from '../services/orderLifecycleManager';
 import { strategyEngine, DEFINED_STRATEGIES } from '../services/strategyEngine';
 import { StorageCheckpointService } from '../services/storageCheckpoint';
+import { calculateExecutionMetrics } from '../services/metricsCalculator';
 
 class MemoryStorage {
   private value: string | null = null;
@@ -42,6 +43,11 @@ async function runTests() {
     }
   }
 
+  const testQuoteTime = new Date();
+  testQuoteTime.setUTCHours(12, 0, 0, 0);
+  if (testQuoteTime.getUTCDay() === 0) testQuoteTime.setUTCDate(testQuoteTime.getUTCDate() + 1);
+  if (testQuoteTime.getUTCDay() === 6) testQuoteTime.setUTCDate(testQuoteTime.getUTCDate() + 2);
+
   const baseQuote: MarketQuote = {
     symbol: 'EUR/USD',
     bid: 1.0850,
@@ -55,7 +61,7 @@ async function runTests() {
     digits: 5,
     pipMultiplier: 10000,
     provider: 'Test Provider',
-    timestamp: Date.now(),
+    timestamp: testQuoteTime.getTime(),
     freshness: 'simulated',
     latencyMs: 15,
     isStale: false
@@ -88,6 +94,34 @@ async function runTests() {
       'Test 1: 0.20% per-trade risk calculation ($20 risk on $10k equity = 0.10 lot EUR/USD)',
       `Got approved: ${res.isApproved}, lots: ${res.calculatedLotSize}, risk: ${res.calculatedRiskAmount}`
     );
+  }
+
+  // Non-simulation modes must never approve order proposals.
+  {
+    const blockedModes = [
+      ['read_only', 'READ_ONLY_MODE'],
+      ['demo_pending', 'BROKER_ADAPTER_UNAVAILABLE'],
+      ['disconnected', 'SYSTEM_DISCONNECTED']
+    ] as const;
+
+    for (const [mode, expectedRule] of blockedModes) {
+      const engine = new RiskEngine(10000);
+      engine.setOperatingMode(mode);
+      const result = engine.validateOrderProposal(
+        baseQuote,
+        baseAccount,
+        [],
+        [],
+        'BUY',
+        1.0831,
+        1.0851
+      );
+      assert(
+        !result.isApproved && result.ruleBlocked === expectedRule,
+        `Operating mode ${mode} blocks new entries`,
+        `Got approved: ${result.isApproved}, rule: ${result.ruleBlocked}`
+      );
+    }
   }
 
   // Test 2: Reject if minimum lot (0.01) exceeds 0.20% risk budget
@@ -166,17 +200,22 @@ async function runTests() {
     );
   }
 
-  // Test 6: 8 trades per day maximum cap
+  // Test 6: 8 entries per day maximum cap
   {
     const engine = new RiskEngine(10000);
     for (let i = 0; i < 8; i++) {
-      engine.recordCompletedTrade(5); // 8 winning trades
+      engine.recordTradeEntry();
     }
     const res = engine.validateOrderProposal(baseQuote, baseAccount, [], [], 'BUY', 1.0831, 1.0851);
     assert(
       res.isApproved === false && res.ruleBlocked === 'DAILY_TRADE_CAP_EXCEEDED',
-      'Test 6: Daily trade cap (8 trades per day) immediately blocks 9th order',
+      'Test 6: Daily entry cap counts opened trades and blocks the 9th entry',
       `Got ruleBlocked: ${res.ruleBlocked}`
+    );
+    engine.recordCompletedTrade(5);
+    assert(
+      engine.getStatus().todayTradesCount === 8,
+      'Test 6b: Closing a trade does not increment the daily entry count'
     );
   }
 
@@ -414,6 +453,224 @@ async function runTests() {
       'Test 18: Idempotency duplicate order protection prevents double order submission',
       `Caught duplicate: ${duplicateCaught}`
     );
+
+    const restoredOlm = new OrderLifecycleManager();
+    restoredOlm.setInitialState([], olm.getOrders(), []);
+    let restoredDuplicateCaught = false;
+    try {
+      await restoredOlm.submitOrder({
+        clientOrderId: 'ord_after_restore',
+        idempotencyKey,
+        symbol: 'EUR/USD',
+        side: 'BUY',
+        sizeLots: 0.1,
+        requestedPrice: 1.0851,
+        stopLossPrice: 1.0831,
+        takeProfitPrice: 1.0891,
+        strategyId: 'strat_test',
+        quote: baseQuote
+      });
+    } catch (err: any) {
+      restoredDuplicateCaught = err.message?.includes('Duplicate submission detected') === true;
+    }
+    assert(
+      restoredDuplicateCaught,
+      'Test 18b: Restored order history rebuilds idempotency protection',
+      `Caught duplicate after restore: ${restoredDuplicateCaught}`
+    );
+  }
+
+  // Test 18c: Unsupported symbols fail closed rather than receiving guessed contract terms
+  {
+    const unsupportedQuote = { ...baseQuote, symbol: 'UNKNOWN/XYZ' };
+    const engine = new RiskEngine(10000);
+    const result = engine.validateOrderProposal(
+      unsupportedQuote,
+      baseAccount,
+      [],
+      [],
+      'BUY',
+      1.0831,
+      1.0851
+    );
+    assert(
+      result.isApproved === false && result.ruleBlocked === 'UNSUPPORTED_INSTRUMENT',
+      'Test 18c: Unknown instruments are rejected without guessed sizing assumptions',
+      `Got ruleBlocked: ${result.ruleBlocked}`
+    );
+  }
+
+  // Test 18d: Pending submissions reserve daily entry capacity
+  {
+    const engine = new RiskEngine(10000);
+    for (let i = 0; i < 7; i++) engine.recordTradeEntry();
+    const pendingOrder: OrderRecord = {
+      id: 'pending',
+      clientOrderId: 'pending',
+      idempotencyKey: 'pending',
+      symbol: 'EUR/USD',
+      side: 'BUY',
+      orderType: 'MARKET',
+      requestedSizeLots: 0.1,
+      filledSizeLots: 0,
+      requestedPrice: 1.0851,
+      stopLossPrice: 1.0831,
+      commissionPaid: 0,
+      status: 'SUBMITTED_LOCAL',
+      strategyId: 'test',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      isSimulatedOrder: true
+    };
+    const result = engine.validateOrderProposal(
+      baseQuote,
+      baseAccount,
+      [],
+      [pendingOrder],
+      'BUY',
+      1.0831,
+      1.0851
+    );
+    assert(
+      result.isApproved === false && result.ruleBlocked === 'DAILY_TRADE_CAP_EXCEEDED',
+      'Test 18d: Pending submissions reserve the remaining daily entry slot',
+      `Got ruleBlocked: ${result.ruleBlocked}`
+    );
+  }
+
+  // Test 18e: UTC weekend lock is enforced by the central risk gate
+  {
+    const engine = new RiskEngine(10000);
+    const weekendQuote = { ...baseQuote, timestamp: Date.UTC(2026, 9, 17, 12) };
+    const result = engine.validateOrderProposal(
+      weekendQuote,
+      baseAccount,
+      [],
+      [],
+      'BUY',
+      1.0831,
+      1.0851
+    );
+    assert(
+      result.isApproved === false && result.ruleBlocked === 'MARKET_CLOSED',
+      'Test 18e: Weekend proposals fail closed in the centralized risk gate',
+      `Got ruleBlocked: ${result.ruleBlocked}`
+    );
+  }
+
+  // Test 18f: A new UTC day resets daily counters and daily loss state
+  {
+    const engine = new RiskEngine(10000);
+    engine.restoreStatus({
+      ...engine.getStatus(),
+      dailyPeriodKey: new Date(Date.now() - 86400000).toISOString().slice(0, 10),
+      todayTradesCount: 8,
+      dailyTradeCapBreached: true,
+      todayRealizedPnl: -150,
+      todayDrawdownPercent: 1.5,
+      dailyLossLimitBreached: true
+    });
+    engine.validateOrderProposal(baseQuote, baseAccount, [], [], 'BUY', 1.0831, 1.0851);
+    const status = engine.getStatus();
+    assert(
+      status.todayTradesCount === 0
+        && !status.dailyTradeCapBreached
+        && status.todayRealizedPnl === 0
+        && !status.dailyLossLimitBreached,
+      'Test 18f: UTC day rollover resets daily limits before validation',
+      `Got trades: ${status.todayTradesCount}, daily loss: ${status.dailyLossLimitBreached}`
+    );
+  }
+
+  // Test 18g: Session drawdown remains cumulative after the daily reset
+  {
+    const engine = new RiskEngine(10000);
+    engine.restoreStatus({
+      ...engine.getStatus(),
+      dailyPeriodKey: new Date(Date.now() - 86400000).toISOString().slice(0, 10),
+      sessionStartingEquity: 10000
+    });
+    const result = engine.validateOrderProposal(
+      baseQuote,
+      { ...baseAccount, equity: 9400, balance: 9400 },
+      [],
+      [],
+      'BUY',
+      1.0831,
+      1.0851
+    );
+    assert(
+      result.isApproved === false && result.ruleBlocked === 'OVERALL_DRAWDOWN_LIMIT_EXCEEDED',
+      'Test 18g: Overall drawdown remains anchored to session-start equity after daily rollover',
+      `Got ruleBlocked: ${result.ruleBlocked}`
+    );
+  }
+
+  // Test 18h: High-impact event blackout covers relevant symbols before and after release
+  {
+    const engine = new RiskEngine(10000);
+    const recentEvent: EconomicEvent = {
+      id: 'released_cpi',
+      title: 'Released CPI',
+      currency: 'USD',
+      impact: 'HIGH',
+      scheduledTime: baseQuote.timestamp - 5 * 60 * 1000,
+      isSyntheticTestScenario: true
+    };
+    const postReleaseResult = engine.validateOrderProposal(
+      baseQuote,
+      baseAccount,
+      [],
+      [],
+      'BUY',
+      1.0831,
+      1.0851,
+      [recentEvent]
+    );
+    const unrelatedQuote = { ...baseQuote, symbol: 'USD/JPY' };
+    const unrelatedEvent: EconomicEvent = { ...recentEvent, currency: 'EUR' };
+    const unrelatedResult = engine.validateOrderProposal(
+      unrelatedQuote,
+      baseAccount,
+      [],
+      [],
+      'BUY',
+      149.9,
+      150.0,
+      [unrelatedEvent]
+    );
+    assert(
+      postReleaseResult.ruleBlocked === 'NEWS_BLACKOUT_ACTIVE'
+        && unrelatedResult.ruleBlocked !== 'NEWS_BLACKOUT_ACTIVE',
+      'Test 18h: Event windows apply for 15 minutes after release and only to matching currencies',
+      `Post-release: ${postReleaseResult.ruleBlocked}, unrelated: ${unrelatedResult.ruleBlocked}`
+    );
+  }
+
+  // Test 18i: Closing a position requires a quote for its own symbol
+  {
+    const olm = new OrderLifecycleManager();
+    const opened = olm.submitOrder({
+      clientOrderId: 'close-symbol-check',
+      idempotencyKey: 'close-symbol-check',
+      symbol: 'EUR/USD',
+      side: 'BUY',
+      sizeLots: 0.1,
+      requestedPrice: 1.0851,
+      stopLossPrice: 1.0831,
+      takeProfitPrice: 1.0891,
+      strategyId: 'test',
+      quote: baseQuote
+    });
+    const wrongSymbolQuote = { ...baseQuote, symbol: 'GBP/USD', bid: 1.29, ask: 1.2902 };
+    const closed = opened.position
+      ? olm.closePosition(opened.position.id, wrongSymbolQuote)
+      : null;
+    assert(
+      closed === null && olm.getPositions().length === 1,
+      'Test 18i: A quote for another symbol cannot close or misprice a paper position',
+      `Closed: ${Boolean(closed)}, remaining positions: ${olm.getPositions().length}`
+    );
   }
 
   // Test 19: Checkpoints preserve risk lockouts across restore
@@ -566,6 +823,73 @@ async function runTests() {
       invalidStateRejected,
       'Test 23: Active cooldown without an end time is rejected as invalid risk state',
       `Invalid state rejected: ${invalidStateRejected}`
+    );
+  }
+
+  // Test 24: Uncomputable performance ratios are not represented as fabricated numbers
+  {
+    const winningTrade: ClosedTradeRecord = {
+      id: 'win',
+      positionId: 'position',
+      symbol: 'EUR/USD',
+      side: 'BUY',
+      sizeLots: 0.1,
+      entryPrice: 1.08,
+      exitPrice: 1.09,
+      slippagePips: 0.2,
+      grossPnl: 10,
+      commission: 0.7,
+      swap: 0,
+      netPnl: 9.3,
+      openedAt: Date.now() - 1000,
+      closedAt: Date.now(),
+      exitReason: 'TAKE_PROFIT',
+      strategyId: 'test'
+    };
+    const metrics = calculateExecutionMetrics([winningTrade], []);
+    assert(
+      metrics.profitFactor === null && metrics.sharpeRatioEstimate === null,
+      'Test 24: Undefined profit factor and unsupported Sharpe ratio remain unavailable',
+      `Profit factor: ${metrics.profitFactor}, Sharpe: ${metrics.sharpeRatioEstimate}`
+    );
+  }
+
+  // Test 25: Version 3 checkpoints migrate daily/session risk baselines
+  {
+    const storage = new MemoryStorage();
+    const checkpointService = new StorageCheckpointService(storage);
+    const riskStatus = {
+      ...new RiskEngine(10000).getStatus(),
+      dailyStartingEquity: 12000,
+      todayTradesCount: 3
+    };
+    const saved = checkpointService.saveCheckpoint({
+      operatingMode: 'simulated',
+      account: baseAccount,
+      positions: [],
+      orders: [],
+      closedTrades: [],
+      riskLimits: new RiskEngine(10000).getLimits(),
+      riskStatus,
+      auditLogs: []
+    });
+    const oldRiskStatus: Partial<typeof riskStatus> = { ...riskStatus };
+    delete oldRiskStatus.dailyPeriodKey;
+    delete oldRiskStatus.sessionStartingEquity;
+    const v3 = {
+      ...saved,
+      schemaVersion: 3,
+      riskStatus: oldRiskStatus
+    };
+    storage.setItem('checkpoint', JSON.stringify(v3));
+    const migrated = checkpointService.loadCheckpoint();
+    assert(
+      migrated?.schemaVersion === 4
+        && migrated.riskStatus.todayTradesCount === 3
+        && migrated.riskStatus.sessionStartingEquity === 12000
+        && typeof migrated.riskStatus.dailyPeriodKey === 'string',
+      'Test 25: Version 3 risk checkpoints migrate without dropping daily counts',
+      `Version: ${migrated?.schemaVersion}, entries: ${migrated?.riskStatus.todayTradesCount}`
     );
   }
 

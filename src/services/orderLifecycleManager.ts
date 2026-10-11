@@ -27,7 +27,7 @@ export class OrderLifecycleManager {
   /**
    * Submits a paper order through local lifecycle simulation (Phase 4)
    */
-  public async submitOrder(params: {
+  public submitOrder(params: {
     clientOrderId: string;
     idempotencyKey: string;
     symbol: string;
@@ -40,7 +40,7 @@ export class OrderLifecycleManager {
     quote: MarketQuote;
     simulateBrokerFailure?: boolean;
     simulateSlippagePips?: number;
-  }): Promise<{ order: OrderRecord; position?: PositionRecord }> {
+  }): { order: OrderRecord; position?: PositionRecord } {
     const {
       clientOrderId,
       idempotencyKey,
@@ -59,6 +59,10 @@ export class OrderLifecycleManager {
     // Idempotency Check
     if (this.idempotencyKeys.has(idempotencyKey)) {
       throw new Error(`Duplicate submission detected. Idempotency key '${idempotencyKey}' already processed.`);
+    }
+    const spec = brokerGateway.getInstrumentSpec(symbol);
+    if (!spec) {
+      throw new Error(`Unsupported simulated instrument '${symbol}'. No contract assumptions are configured.`);
     }
     this.idempotencyKeys.add(idempotencyKey);
 
@@ -104,7 +108,6 @@ export class OrderLifecycleManager {
       ? Number((quote.ask + slippageUnits).toFixed(quote.digits))
       : Number((quote.bid - slippageUnits).toFixed(quote.digits));
 
-    const spec = brokerGateway.getInstrumentSpec(symbol);
     const commission = Number((sizeLots * 7.0).toFixed(2)); // Standard $7 / lot round-turn commission model
 
     order.filledSizeLots = sizeLots;
@@ -148,6 +151,7 @@ export class OrderLifecycleManager {
     const closed: ClosedTradeRecord[] = [];
     const modified: PositionRecord[] = [];
     const spec = brokerGateway.getInstrumentSpec(quote.symbol);
+    if (!spec) return { closedTrades: closed, modifiedPositions: modified };
 
     for (const [posId, pos] of this.positions.entries()) {
       if (pos.symbol !== quote.symbol) continue;
@@ -240,8 +244,10 @@ export class OrderLifecycleManager {
   public closePosition(positionId: string, quote: MarketQuote, reason: ClosedTradeRecord['exitReason'] = 'MANUAL_CLOSE'): ClosedTradeRecord | null {
     const pos = this.positions.get(positionId);
     if (!pos) return null;
+    if (quote.symbol !== pos.symbol) return null;
 
     const spec = brokerGateway.getInstrumentSpec(pos.symbol);
+    if (!spec) return null;
     const currentPrice = pos.side === 'BUY' ? quote.bid : quote.ask;
     const priceDiff = pos.side === 'BUY' ? currentPrice - pos.entryPrice : pos.entryPrice - currentPrice;
     const grossPnl = priceDiff * spec.contractSize * pos.sizeLots;
@@ -297,7 +303,9 @@ export class OrderLifecycleManager {
     for (const p of positions) this.positions.set(p.id, p);
 
     this.orders.clear();
+    this.idempotencyKeys.clear();
     for (const o of orders) this.orders.set(o.id, o);
+    for (const o of orders) this.idempotencyKeys.add(o.idempotencyKey);
 
     this.closedTrades = [...closed];
   }

@@ -12,7 +12,7 @@ export const DEFINED_STRATEGIES: StrategyDefinition[] = [
     invalidationRules: 'M15 candle close crossing EMA 200 or ADX momentum collapsing below 20.0.',
     holdingTimeExpected: '2 - 8 Hours',
     researchStatus: 'HYPOTHESIS_PENDING_OUT_OF_SAMPLE',
-    baselineEvidenceNote: 'Research baseline rule. Out-of-sample forward paper testing in progress. Never implies future returns.'
+    baselineEvidenceNote: 'Untested strategy hypothesis. No out-of-sample market-data results are available.'
   },
   {
     id: 'strat_mtf_expansion',
@@ -24,7 +24,7 @@ export const DEFINED_STRATEGIES: StrategyDefinition[] = [
     invalidationRules: 'Counter-trend close on H1 or RSI divergent exhaustion.',
     holdingTimeExpected: '1 - 4 Hours',
     researchStatus: 'HYPOTHESIS_PENDING_OUT_OF_SAMPLE',
-    baselineEvidenceNote: 'Multi-timeframe hypothesis. Requires verified closed candles across timeframes.'
+    baselineEvidenceNote: 'Untested strategy hypothesis. Verified multi-timeframe candles are unavailable.'
   },
   {
     id: 'strat_donchian_breakout',
@@ -36,7 +36,7 @@ export const DEFINED_STRATEGIES: StrategyDefinition[] = [
     invalidationRules: 'False breakout with immediate re-entry back below median 20-channel within 2 bars.',
     holdingTimeExpected: '1 - 6 Hours',
     researchStatus: 'HYPOTHESIS_PENDING_OUT_OF_SAMPLE',
-    baselineEvidenceNote: 'Classic Trend Following baseline. Susceptible to chop in range-bound regimes.'
+    baselineEvidenceNote: 'Untested strategy hypothesis. Susceptible to chop in range-bound regimes.'
   },
   {
     id: 'strat_xau_liquidity_sweep',
@@ -48,7 +48,7 @@ export const DEFINED_STRATEGIES: StrategyDefinition[] = [
     invalidationRules: 'Decisive continuation close beyond swept extreme by > 0.5 ATR.',
     holdingTimeExpected: '30m - 90m',
     researchStatus: 'HYPOTHESIS_PENDING_OUT_OF_SAMPLE',
-    baselineEvidenceNote: 'Mean-reversion liquidity hypothesis. Strict stop-loss required due to Gold gap risk.'
+    baselineEvidenceNote: 'Untested strategy hypothesis. Stop-loss required; broker session and gap behavior are unverified.'
   },
   {
     id: 'strat_bb_mean_reversion',
@@ -60,7 +60,7 @@ export const DEFINED_STRATEGIES: StrategyDefinition[] = [
     invalidationRules: 'Band walk expansion where ADX exceeds 25 or candle closes outside 2.5σ channel.',
     holdingTimeExpected: '45m - 3 Hours',
     researchStatus: 'HYPOTHESIS_PENDING_OUT_OF_SAMPLE',
-    baselineEvidenceNote: 'Mean-reversion model. Requires strict range-bound / low-ADX filter (< 25) to prevent trending runaway.'
+    baselineEvidenceNote: 'Untested strategy hypothesis. Requires a range-bound / low-ADX filter (< 25).'
   },
   {
     id: 'strat_session_open_breakout',
@@ -72,7 +72,7 @@ export const DEFINED_STRATEGIES: StrategyDefinition[] = [
     invalidationRules: 'Re-entry back inside 50% median of the initial balance range within 2 candles.',
     holdingTimeExpected: '1 - 3 Hours',
     researchStatus: 'HYPOTHESIS_PENDING_OUT_OF_SAMPLE',
-    baselineEvidenceNote: 'Session momentum impulse hypothesis. Blocked during pre-close or off-session hours.'
+    baselineEvidenceNote: 'Untested strategy hypothesis. Session hours are not broker-verified.'
   }
 ];
 
@@ -107,8 +107,8 @@ export class StrategyEngine {
     const normAtrRatio = atr / (quote.last || 1);
     let volatilityRegime: 'LOW' | 'NORMAL' | 'HIGH' | 'EXTREME' = 'NORMAL';
     if (normAtrRatio < 0.0006) volatilityRegime = 'LOW';
-    else if (normAtrRatio > 0.0025) volatilityRegime = 'HIGH';
     else if (normAtrRatio > 0.005) volatilityRegime = 'EXTREME';
+    else if (normAtrRatio > 0.0025) volatilityRegime = 'HIGH';
 
     const date = new Date(quote.timestamp);
     const day = date.getUTCDay();
@@ -139,7 +139,10 @@ export class StrategyEngine {
     let scheduledEventRisk: 'NONE' | 'LOW' | 'HIGH_IMPACT_APPROACHING' = 'NONE';
     let nextEventMinutesAway: number | undefined;
 
-    const highImpactEvents = upcomingEvents.filter(e => e.impact === 'HIGH');
+    const quoteCurrencies = quote.symbol.split('/');
+    const highImpactEvents = upcomingEvents.filter(e =>
+      e.impact === 'HIGH' && quoteCurrencies.includes(e.currency)
+    );
     for (const evt of highImpactEvents) {
       const minutesAway = (evt.scheduledTime - quote.timestamp) / 60000;
       if (minutesAway > 0 && minutesAway <= 45) {
@@ -199,6 +202,36 @@ export class StrategyEngine {
         signal: 'NO_TRADE',
         signalConfidence: 0,
         noTradeReason: 'Data feed is degraded or stale. Safety gate enforcing NO TRADE.',
+        evaluatedAt: Date.now()
+      };
+    }
+
+    if (strategy.targetSymbol !== quote.symbol) {
+      return {
+        strategyId: strategy.id,
+        strategyName: strategy.name,
+        symbol: quote.symbol,
+        suitabilityScore: 0,
+        suitabilityThreshold: 70,
+        marketRegimeFit: `Ineligible instrument (${quote.symbol})`,
+        signal: 'NO_TRADE',
+        signalConfidence: 0,
+        noTradeReason: `Strategy is configured for ${strategy.targetSymbol}, not ${quote.symbol}.`,
+        evaluatedAt: Date.now()
+      };
+    }
+
+    if (strategy.timeframes.length > 1) {
+      return {
+        strategyId: strategy.id,
+        strategyName: strategy.name,
+        symbol: quote.symbol,
+        suitabilityScore: 0,
+        suitabilityThreshold: 70,
+        marketRegimeFit: 'Required timeframes not jointly evaluated',
+        signal: 'NO_TRADE',
+        signalConfidence: 0,
+        noTradeReason: `This strategy requires ${strategy.timeframes.join('/')} validation; the current evaluator only receives one candle series.`,
         evaluatedAt: Date.now()
       };
     }

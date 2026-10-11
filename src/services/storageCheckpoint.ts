@@ -10,7 +10,7 @@ import {
 } from '../types/trading';
 
 export interface DurableCheckpoint {
-  schemaVersion: 3;
+  schemaVersion: 4;
   checkpointId: string;
   timestamp: number;
   operatingMode: OperatingMode;
@@ -70,9 +70,12 @@ const isRiskStatus = (value: unknown): value is RiskStatus => {
     && value.todayTradesCount >= 0
     && isFiniteNumber(value.dailyStartingEquity)
     && value.dailyStartingEquity > 0
+    && (value.sessionStartingEquity === undefined
+      || (isFiniteNumber(value.sessionStartingEquity) && value.sessionStartingEquity > 0))
     && isFiniteNumber(value.todayDrawdownPercent)
     && value.todayDrawdownPercent >= 0
     && (value.pauseReason === undefined || typeof value.pauseReason === 'string')
+    && (value.dailyPeriodKey === undefined || typeof value.dailyPeriodKey === 'string')
     && (value.cooldownEndsAt === undefined || isFiniteNumber(value.cooldownEndsAt))
     && (!value.isCooldownActive || isFiniteNumber(value.cooldownEndsAt))
     && (value.killSwitchTriggeredAt === undefined || isFiniteNumber(value.killSwitchTriggeredAt));
@@ -183,6 +186,8 @@ const createLegacyRiskStatus = (equity: number): RiskStatus => ({
   consecutiveLossCount: 0,
   isCooldownActive: false,
   dailyStartingEquity: Math.max(1, equity),
+  sessionStartingEquity: Math.max(1, equity),
+  dailyPeriodKey: new Date().toISOString().slice(0, 10),
   todayRealizedPnl: 0,
   todayTradesCount: 0,
   todayDrawdownPercent: 0,
@@ -222,7 +227,7 @@ export class StorageCheckpointService {
     auditLogs: AuditLogEntry[];
   }): DurableCheckpoint {
     const checkpoint: DurableCheckpoint = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       checkpointId: 'chk_local_' + Date.now().toString(36),
       timestamp: Date.now(),
       operatingMode: data.operatingMode,
@@ -258,8 +263,17 @@ export class StorageCheckpointService {
     }
 
     const riskStatus = parsed.riskStatus;
-    if (parsed.schemaVersion === 3 && isRiskStatus(riskStatus)) {
-      return { ...parsed, schemaVersion: 3, riskStatus };
+    if ((parsed.schemaVersion === 3 || parsed.schemaVersion === 4) && isRiskStatus(riskStatus)) {
+      const migratedRiskStatus = {
+        ...riskStatus,
+        dailyPeriodKey: riskStatus.dailyPeriodKey || new Date(parsed.timestamp).toISOString().slice(0, 10),
+        sessionStartingEquity: riskStatus.sessionStartingEquity ?? riskStatus.dailyStartingEquity
+      };
+      return {
+        ...parsed,
+        schemaVersion: 4,
+        riskStatus: migratedRiskStatus
+      };
     }
 
     if (parsed.schemaVersion === undefined && parsed.riskStatus === undefined) {
@@ -270,7 +284,7 @@ export class StorageCheckpointService {
 
       return {
         ...parsed,
-        schemaVersion: 3,
+        schemaVersion: 4,
         riskStatus: createLegacyRiskStatus(legacyAccount.equity),
         verifiedStatusNote: 'Legacy local checkpoint restored with entries locked because prior risk state was not saved.'
       };

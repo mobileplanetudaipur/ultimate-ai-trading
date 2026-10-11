@@ -13,6 +13,7 @@ import {
 import {
   AccountState,
   AuditLogEntry,
+  OperatingMode,
   PositionRecord,
   RiskLimits,
   RiskStatus,
@@ -21,6 +22,7 @@ import {
 
 interface OverviewViewProps {
   account: AccountState;
+  operatingMode: OperatingMode;
   riskStatus: RiskStatus;
   riskLimits: RiskLimits;
   positions: PositionRecord[];
@@ -31,6 +33,7 @@ interface OverviewViewProps {
 
 export const OverviewView: React.FC<OverviewViewProps> = ({
   account,
+  operatingMode,
   riskStatus,
   riskLimits,
   positions,
@@ -41,6 +44,32 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
   const isDrawdownCritical = riskStatus.todayDrawdownPercent >= riskLimits.dailyLossLimitPercent;
   const isTradeCapReached = riskStatus.todayTradesCount >= riskLimits.maxDailyTrades;
   const tradesRemaining = Math.max(0, riskLimits.maxDailyTrades - riskStatus.todayTradesCount);
+  const operatingState = {
+    simulated: {
+      title: 'System Operating in Paper Simulation',
+      notice: 'No Real Capital Used',
+      detail: 'No broker adapter is implemented. Quotes are synthetic, and orders and fills remain inside the local paper simulator; no broker data is queried.',
+      noticeClass: 'text-emerald-400'
+    },
+    read_only: {
+      title: 'Read-Only Observation (Synthetic Data)',
+      notice: 'Order Entries Blocked',
+      detail: 'Quotes are locally generated for observation only. The deterministic risk gate rejects all order proposals in read-only mode.',
+      noticeClass: 'text-sky-400'
+    },
+    demo_pending: {
+      title: 'Broker Demo Execution Unavailable',
+      notice: 'No Broker Connection',
+      detail: 'No broker adapter or account connection is implemented. Market data and account values shown here remain local simulation state.',
+      noticeClass: 'text-amber-400'
+    },
+    disconnected: {
+      title: 'System Disconnected',
+      notice: 'Entries Blocked',
+      detail: 'The synthetic tick stream is stopped and new entries are blocked. Any account or position values shown are local paper state, not broker-confirmed.',
+      noticeClass: 'text-slate-300'
+    }
+  }[operatingMode];
 
   return (
     <div className="space-y-6">
@@ -52,14 +81,14 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <span className="font-semibold text-sm text-white">System Operating in Paper Simulation</span>
+              <span className="font-semibold text-sm text-white">{operatingState.title}</span>
               <span className="text-slate-600" aria-hidden="true">·</span>
-              <span className="text-emerald-400 font-medium text-xs">
-                Zero Capital at Risk
+              <span className={`${operatingState.noticeClass} font-medium text-xs`}>
+                {operatingState.notice}
               </span>
             </div>
             <p className="text-xs text-slate-400 mt-0.5">
-              Live broker trading is permanently disabled. All orders, ticks, and fills are executed locally inside the deterministic paper engine.
+              {operatingState.detail}
             </p>
           </div>
         </div>
@@ -69,7 +98,7 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
             onClick={() => onNavigateTab('shadow')}
             className="px-3.5 py-1.5 rounded-lg text-xs font-medium text-slate-300 hover:text-white bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/80 transition-colors cursor-pointer"
           >
-            Inspect MT5 Bridge State
+            Review Broker Integration Status
           </button>
         </div>
       </div>

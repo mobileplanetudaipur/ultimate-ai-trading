@@ -1,13 +1,12 @@
 import { InstrumentSpecification } from '../types/trading';
 
 /**
- * Standard XM / MetaTrader 5 Contract Specifications
- * Verified against XM MT5 standard contract specifications for FX, Commodities, and Crypto.
+ * Local sizing assumptions for paper simulation only; these are not broker-verified.
  */
-export const XM_MT5_INSTRUMENT_SPECS: Record<string, InstrumentSpecification> = {
+export const SIMULATED_INSTRUMENT_SPECS: Record<string, InstrumentSpecification> = {
   'EUR/USD': {
     symbol: 'EUR/USD',
-    displayName: 'Euro vs US Dollar (XM EURUSD)',
+    displayName: 'Euro vs US Dollar (simulation)',
     assetClass: 'FOREX',
     baseCurrency: 'EUR',
     quoteCurrency: 'USD',
@@ -25,7 +24,7 @@ export const XM_MT5_INSTRUMENT_SPECS: Record<string, InstrumentSpecification> = 
   },
   'GBP/USD': {
     symbol: 'GBP/USD',
-    displayName: 'British Pound vs US Dollar (XM GBPUSD)',
+    displayName: 'British Pound vs US Dollar (simulation)',
     assetClass: 'FOREX',
     baseCurrency: 'GBP',
     quoteCurrency: 'USD',
@@ -43,7 +42,7 @@ export const XM_MT5_INSTRUMENT_SPECS: Record<string, InstrumentSpecification> = 
   },
   'USD/JPY': {
     symbol: 'USD/JPY',
-    displayName: 'US Dollar vs Japanese Yen (XM USDJPY)',
+    displayName: 'US Dollar vs Japanese Yen (simulation)',
     assetClass: 'FOREX',
     baseCurrency: 'USD',
     quoteCurrency: 'JPY',
@@ -61,7 +60,7 @@ export const XM_MT5_INSTRUMENT_SPECS: Record<string, InstrumentSpecification> = 
   },
   'XAU/USD': {
     symbol: 'XAU/USD',
-    displayName: 'Gold vs US Dollar (XM GOLD# / XAUUSD)',
+    displayName: 'Gold vs US Dollar (simulation)',
     assetClass: 'COMMODITY',
     baseCurrency: 'XAU',
     quoteCurrency: 'USD',
@@ -79,7 +78,7 @@ export const XM_MT5_INSTRUMENT_SPECS: Record<string, InstrumentSpecification> = 
   },
   'BTC/USD': {
     symbol: 'BTC/USD',
-    displayName: 'Bitcoin vs US Dollar (XM BTCUSD)',
+    displayName: 'Bitcoin vs US Dollar (simulation)',
     assetClass: 'CRYPTO',
     baseCurrency: 'BTC',
     quoteCurrency: 'USD',
@@ -99,10 +98,10 @@ export const XM_MT5_INSTRUMENT_SPECS: Record<string, InstrumentSpecification> = 
 
 export interface BrokerConnectionStatus {
   isConnected: boolean;
-  adapterType: 'XM_METATRADER_5';
+  adapterType: 'NOT_IMPLEMENTED';
   hostTarget: string;
-  terminalStatus: 'NOT_DETECTED' | 'DISCONNECTED' | 'STANDBY';
-  accountType: 'DEMO_ONLY';
+  terminalStatus: 'NOT_IMPLEMENTED';
+  accountType: 'PAPER_SIMULATION';
   serverName: string;
   errorMessage: string;
   lastCheckedTimestamp: number;
@@ -111,12 +110,12 @@ export interface BrokerConnectionStatus {
 export class BrokerGatewayService {
   private status: BrokerConnectionStatus = {
     isConnected: false,
-    adapterType: 'XM_METATRADER_5',
-    hostTarget: '127.0.0.1:8000 (Local Windows MT5 Python/ZeroMQ Bridge)',
-    terminalStatus: 'NOT_DETECTED',
-    accountType: 'DEMO_ONLY',
-    serverName: 'XMGlobal-Demo',
-    errorMessage: 'Windows MT5 terminal bridge is not active. Real execution remains explicitly blocked.',
+    adapterType: 'NOT_IMPLEMENTED',
+    hostTarget: 'Not configured',
+    terminalStatus: 'NOT_IMPLEMENTED',
+    accountType: 'PAPER_SIMULATION',
+    serverName: 'Not configured',
+    errorMessage: 'Manual demo order ticket only; strategy automation is not connected. Live order activation is locked pending separate release approval.',
     lastCheckedTimestamp: Date.now()
   };
 
@@ -124,27 +123,8 @@ export class BrokerGatewayService {
     return { ...this.status, lastCheckedTimestamp: Date.now() };
   }
 
-  public getInstrumentSpec(symbol: string): InstrumentSpecification {
-    return (
-      XM_MT5_INSTRUMENT_SPECS[symbol] || {
-        symbol,
-        displayName: symbol,
-        assetClass: 'FOREX',
-        baseCurrency: 'USD',
-        quoteCurrency: 'USD',
-        contractSize: 100000,
-        tickSize: 0.00001,
-        tickValue: 1.0,
-        digits: 5,
-        pipMultiplier: 10000,
-        minVolumeLots: 0.01,
-        maxVolumeLots: 50.0,
-        volumeStepLots: 0.01,
-        typicalSpreadPips: 2.0,
-        marginCurrency: 'USD',
-        tradingHours: '24/5'
-      }
-    );
+  public getInstrumentSpec(symbol: string): InstrumentSpecification | undefined {
+    return SIMULATED_INSTRUMENT_SPECS[symbol];
   }
 }
 

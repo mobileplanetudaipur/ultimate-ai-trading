@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { invoke, isTauri } from '@tauri-apps/api/core';
 import {
   AccountState,
   AuditLogEntry,
@@ -21,6 +22,8 @@ import { economicCalendarService } from './services/economicCalendarService';
 import { calculateExecutionMetrics } from './services/metricsCalculator';
 import { checkpointService, DurableCheckpoint } from './services/storageCheckpoint';
 import { brokerGateway } from './services/brokerGateway';
+import { loadXMBrokerMarketData, XMBrokerMarketData } from './services/xmMarketData';
+import { persistentRunControl, PersistentRunState } from './services/persistentRunControl';
 
 import { NavigationSidebar, ActiveNavTab } from './components/NavigationSidebar';
 import { TopBar } from './components/TopBar';
@@ -45,13 +48,15 @@ const getErrorMessage = (error: unknown): string =>
 
 export const App: React.FC = () => {
   // Navigation State
-  const [activeTab, setActiveTab] = useState<ActiveNavTab>('overview');
+  const [activeTab, setActiveTab] = useState<ActiveNavTab>(() => isTauri() ? 'settings' : 'overview');
   const [isNavigationOpen, setIsNavigationOpen] = useState(false);
 
   // Operating State
   const [operatingMode, setOperatingMode] = useState<OperatingMode>('simulated');
+  const [botRunState, setBotRunState] = useState<PersistentRunState>(() => isTauri() ? persistentRunControl.load() : 'RUNNING');
   const [selectedSymbol, setSelectedSymbol] = useState<string>('EUR/USD');
   const [quotes, setQuotes] = useState<MarketQuote[]>([]);
+  const brokerMarketCache = useRef<XMBrokerMarketData | null>(null);
   const [isFeedDegraded, setIsFeedDegraded] = useState<boolean>(false);
 
   // Account State (Truthful: strictly unconfirmed paper balance)
@@ -118,8 +123,22 @@ export const App: React.FC = () => {
     }, 6000);
   };
 
+  const handleToggleBotRunState = async () => {
+    const next: PersistentRunState = botRunState === 'RUNNING' ? 'STOPPED' : 'RUNNING';
+    try {
+      persistentRunControl.save(next);
+      setBotRunState(next);
+      logAudit('SYSTEM', 'INFO', `Persistent strategy run control set to ${next}.`, undefined, 'OPERATOR');
+      showNotice(next === 'STOPPED'
+        ? 'Strategy proposals stopped. They do not control the manual XM order ticket.'
+        : 'Strategy proposals started. They do not submit XM orders.', 'success');
+    } catch (error) {
+      showNotice(getErrorMessage(error), 'error');
+    }
+  };
   // Initialize service ticks & load checkpoint on mount
   useEffect(() => {
+    marketDataService.setBrokerFeedActive(isTauri());
     marketDataService.startTickStream();
     setQuotes(marketDataService.getAllQuotes());
 
@@ -170,6 +189,41 @@ export const App: React.FC = () => {
     };
   }, [logAudit]);
 
+  // In the desktop app, strategy evaluation receives only quotes/history read from the signed-in XM terminal.
+  useEffect(() => {
+    if (!isTauri()) return;
+    let stopped = false;
+    let requestInFlight = false;
+    let lastHistoryRefresh = 0;
+    const poll = async () => {
+      if (stopped || requestInFlight) return;
+      requestInFlight = true;
+      try {
+        const next = await loadXMBrokerMarketData(brokerMarketCache.current || undefined, Date.now() - lastHistoryRefresh >= 60_000);
+        if (stopped) return;
+        brokerMarketCache.current = next;
+        lastHistoryRefresh = Date.now();
+                marketDataService.setOfflineState(false);
+        marketDataService.replaceBrokerData(next.quotes, next.candles);
+        setQuotes(next.quotes);
+      } catch (error) {
+        if (stopped) return;
+        const message = getErrorMessage(error);
+                marketDataService.setOfflineState(true);
+        setQuotes(marketDataService.getAllQuotes());
+        logAudit('SYSTEM', 'WARN', 'XM market-data refresh failed; strategies must treat the feed as unavailable.', { error: message }, 'OPERATOR');
+      } finally {
+        requestInFlight = false;
+      }
+    };
+    void poll();
+    const interval = window.setInterval(() => void poll(), 3000);
+    return () => {
+      stopped = true;
+      window.clearInterval(interval);
+    };
+  }, [logAudit]);
+
   useEffect(() => {
     if (!isNavigationOpen) return;
 
@@ -187,7 +241,13 @@ export const App: React.FC = () => {
 
     for (const pos of positions) {
       const spec = brokerGateway.getInstrumentSpec(pos.symbol);
-      marginUsed += (pos.sizeLots * spec.contractSize * pos.entryPrice) / account.leverage;
+      if (spec) {
+        marginUsed += (pos.sizeLots * spec.contractSize * pos.entryPrice) / account.leverage;
+      } else {
+        marginUsed = Math.max(marginUsed, account.equity);
+        riskEngine.setTradingPaused(true, `Unsupported instrument in restored paper position: ${pos.symbol}`);
+        setRiskStatus(riskEngine.getStatus());
+      }
       totalUnrealized += pos.unrealizedPnl;
     }
 
@@ -216,11 +276,11 @@ export const App: React.FC = () => {
     change24hPercent: 0.12,
     digits: 5,
     pipMultiplier: 10000,
-    provider: 'Local In-Memory Simulation',
+    provider: isTauri() ? 'Waiting for fresh XM terminal data' : 'Local In-Memory Simulation',
     timestamp: Date.now(),
-    freshness: 'simulated',
+    freshness: isTauri() ? 'unavailable' : 'simulated',
     latencyMs: 14,
-    isStale: false
+    isStale: isTauri()
   };
 
   const activeCandles = marketDataService.getCandles(activeQuote.symbol);
@@ -236,9 +296,12 @@ export const App: React.FC = () => {
     activeCandles,
     marketRegime
   );
-
   // Execute Signal proposal through Deterministic Risk Gate
-  const handleExecuteSignal = async (evaluation: StrategyEvaluation) => {
+  const handleExecuteSignal = (evaluation: StrategyEvaluation) => {
+    if (botRunState !== 'RUNNING') {
+      showNotice('The persistent bot control is stopped. Start it from Connections to enable paper proposals.', 'error');
+      return;
+    }
     if (evaluation.signal === 'NO_TRADE') {
       showNotice(`Cannot execute: Strategy returned NO TRADE: ${evaluation.noTradeReason}`, 'error');
       return;
@@ -274,7 +337,7 @@ export const App: React.FC = () => {
     const idempotencyKey = 'idem_' + Date.now().toString(36) + '_' + evaluation.strategyId;
 
     try {
-      const { order } = await orderManager.submitOrder({
+      const { order, position } = orderManager.submitOrder({
         clientOrderId,
         idempotencyKey,
         symbol: activeQuote.symbol,
@@ -291,6 +354,10 @@ export const App: React.FC = () => {
 
       setOrders([...orderManager.getOrders()]);
       setPositions([...orderManager.getPositions()]);
+      if (order.status === 'SIMULATED_FILL' && position) {
+        riskEngine.recordTradeEntry();
+        setRiskStatus(riskEngine.getStatus());
+      }
 
       logAudit('ORDER', 'INFO', `Paper Order ${order.id} executed for ${order.requestedSizeLots} lots ${order.side} ${order.symbol} @ ${order.executedPrice}`, {
         orderId: order.id,
@@ -308,15 +375,27 @@ export const App: React.FC = () => {
   };
 
   const handleClosePosition = (positionId: string) => {
-    const closed = orderManager.closePosition(positionId, activeQuote, 'MANUAL_CLOSE');
-    if (closed) {
-      riskEngine.recordCompletedTrade(closed.netPnl);
-      setClosedTrades([...orderManager.getClosedTrades()]);
-      setPositions([...orderManager.getPositions()]);
-      setRiskStatus(riskEngine.getStatus());
-      logAudit('ORDER', 'INFO', `Paper position ${positionId} manually closed. Realized P&L: $${closed.netPnl.toFixed(2)}`, { trade: closed }, 'OPERATOR');
-      showNotice(`Position ${positionId} closed. Realized: $${closed.netPnl.toFixed(2)}`, 'info');
+    const position = positions.find(item => item.id === positionId);
+    if (!position) return;
+
+    const matchingQuote = quotes.find(quote => quote.symbol === position.symbol);
+    if (!matchingQuote) {
+      showNotice(`Cannot close ${position.symbol}: no matching local quote is available. The position remains open.`, 'error');
+      return;
     }
+
+    const closed = orderManager.closePosition(positionId, matchingQuote, 'MANUAL_CLOSE');
+    if (!closed) {
+      showNotice(`Cannot close ${position.symbol}: its local contract assumptions are unavailable. The position remains open and no broker close was sent.`, 'error');
+      return;
+    }
+
+    riskEngine.recordCompletedTrade(closed.netPnl);
+    setClosedTrades([...orderManager.getClosedTrades()]);
+    setPositions([...orderManager.getPositions()]);
+    setRiskStatus(riskEngine.getStatus());
+    logAudit('ORDER', 'INFO', `Paper position ${positionId} manually closed. Realized P&L: $${closed.netPnl.toFixed(2)}`, { trade: closed }, 'OPERATOR');
+    showNotice(`Position ${positionId} closed. Realized: $${closed.netPnl.toFixed(2)}`, 'info');
   };
 
   const handleToggleTrailingStop = (positionId: string) => {
@@ -330,8 +409,7 @@ export const App: React.FC = () => {
   const handleConfirmKillSwitch = (closePositionsImmediately: boolean) => {
     riskEngine.triggerKillSwitch();
     setRiskStatus(riskEngine.getStatus());
-
-    let closedCount = 0;
+        let closedCount = 0;
     if (closePositionsImmediately) {
       const closedList = orderManager.closeAllPositions(sym => quotes.find(q => q.symbol === sym));
       for (const t of closedList) {
@@ -340,6 +418,10 @@ export const App: React.FC = () => {
       closedCount = closedList.length;
       setPositions([...orderManager.getPositions()]);
       setClosedTrades([...orderManager.getClosedTrades()]);
+      const remainingPositions = orderManager.getPositions();
+      if (remainingPositions.length > 0) {
+        showNotice(`Emergency halt is active, but ${remainingPositions.length} paper position(s) remain open because matching local quotes or contract assumptions are unavailable.`, 'error');
+      }
     }
 
     logAudit('KILL_SWITCH', 'SECURITY', `Emergency Halt Triggered. All automated entries blocked. ${closedCount} positions closed.`, {
@@ -360,7 +442,7 @@ export const App: React.FC = () => {
     const nextPaused = !riskStatus.isTradingPaused;
     riskEngine.setTradingPaused(nextPaused, nextPaused ? 'Paused by Operator' : undefined);
     setRiskStatus(riskEngine.getStatus());
-    logAudit('SYSTEM', 'INFO', nextPaused ? 'Automated entries paused by operator.' : 'Automated entries resumed.', undefined, 'OPERATOR');
+        logAudit('SYSTEM', 'INFO', nextPaused ? 'Automated entries paused by operator.' : 'Automated entries resumed.', undefined, 'OPERATOR');
   };
 
   const handleSimulateLoss = () => {
@@ -404,6 +486,7 @@ export const App: React.FC = () => {
     if (!savedCheckpoint) return;
     setOperatingMode(savedCheckpoint.operatingMode);
     marketDataService.setOperatingMode(savedCheckpoint.operatingMode);
+    riskEngine.setOperatingMode(savedCheckpoint.operatingMode);
     setAccount(savedCheckpoint.account);
     riskEngine.restoreStatus(savedCheckpoint.riskStatus);
     setRiskStatus(riskEngine.getStatus());
@@ -421,12 +504,12 @@ export const App: React.FC = () => {
   const getViewTitle = () => {
     switch (activeTab) {
       case 'overview': return 'Executive Overview';
-      case 'markets': return 'Markets & Live Telemetry';
+      case 'markets': return 'Markets & Synthetic Telemetry';
       case 'strategies': return 'Strategies & Multi-Regime Signals';
       case 'portfolio': return 'Portfolio & Order Lifecycle';
       case 'risk': return 'Deterministic Risk Center';
       case 'research': return 'Research & Backtest Governance';
-      case 'shadow': return 'Shadow Mode & MT5 Bridge';
+      case 'shadow': return 'Broker Integration Status';
       case 'calendar': return 'Macroeconomic Blackout Calendar';
       case 'audit': return 'Operational Audit & Checkpoints';
       case 'settings': return 'Bridge Connections & Settings';
@@ -453,6 +536,7 @@ export const App: React.FC = () => {
       <div className="flex-1 flex flex-col min-w-0 overflow-y-auto">
         <TopBar
           activeViewTitle={getViewTitle()}
+          operatingMode={operatingMode}
           account={account}
           riskStatus={riskStatus}
           riskLimits={riskLimits}
@@ -460,6 +544,7 @@ export const App: React.FC = () => {
           onToggleNavigation={() => setIsNavigationOpen(open => !open)}
           feedLatencyMs={activeQuote.latencyMs}
           onTriggerKillSwitch={() => setIsKillSwitchModalOpen(true)}
+          onOpenModeSelector={() => setIsModeModalOpen(true)}
           onTogglePause={handleTogglePause}
         />
 
@@ -488,6 +573,7 @@ export const App: React.FC = () => {
           {activeTab === 'overview' && (
             <OverviewView
               account={account}
+              operatingMode={operatingMode}
               riskStatus={riskStatus}
               riskLimits={riskLimits}
               positions={positions}
@@ -568,13 +654,20 @@ export const App: React.FC = () => {
           )}
 
           {activeTab === 'settings' && (
-            <ConnectionsSettingsView />
+            <ConnectionsSettingsView
+              botRunState={botRunState}
+              onToggleBotRunState={() => void handleToggleBotRunState()}
+
+
+
+
+            />
           )}
         </main>
 
         {/* Quiet Professional Footer */}
         <footer className="border-t border-slate-900 bg-slate-950 py-4 px-6 text-center text-[11px] text-slate-500 font-mono">
-          Ultimate AI Trading Platform • Truthful In-Memory Paper Simulation • No Real Capital At Risk • Rule 1 Live Trading Locked
+          Ultimate AI Trading • {isTauri() ? 'XM demo order ticket · live orders locked' : 'Local Paper Simulation'}
         </footer>
       </div>
 
@@ -586,6 +679,7 @@ export const App: React.FC = () => {
         onSelectMode={mode => {
           setOperatingMode(mode);
           marketDataService.setOperatingMode(mode);
+          riskEngine.setOperatingMode(mode);
           logAudit('SYSTEM', 'INFO', `Operating mode altered to ${mode.toUpperCase()}`, undefined, 'OPERATOR');
         }}
       />
