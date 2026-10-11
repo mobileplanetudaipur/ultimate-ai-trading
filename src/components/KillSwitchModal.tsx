@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, ShieldAlert, AlertOctagon, Check, ArrowRight } from 'lucide-react';
+import { X, ShieldAlert, Check, ArrowRight, ShieldCheck } from 'lucide-react';
 
 interface KillSwitchModalProps {
   isOpen: boolean;
@@ -23,36 +23,37 @@ export const KillSwitchModal: React.FC<KillSwitchModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-      <div className="bg-slate-900 border border-red-500/50 rounded-xl max-w-lg w-full p-6 shadow-2xl relative">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md p-4">
+      <div className="bg-slate-900/95 border border-red-500/40 rounded-2xl max-w-lg w-full p-6 shadow-2xl relative backdrop-blur-2xl">
         <button
           onClick={onClose}
-          className="absolute top-4 right-4 text-slate-400 hover:text-white p-1 rounded-md hover:bg-slate-800"
+          className="absolute top-4 right-4 text-slate-400 hover:text-white p-1.5 rounded-xl hover:bg-slate-800 transition-colors"
+          aria-label="Close dialog"
         >
           <X className="w-5 h-5" />
         </button>
 
-        <div className="flex items-center gap-3 mb-3">
-          <div className="h-10 w-10 rounded-full bg-red-600/20 border border-red-500/50 flex items-center justify-center text-red-500">
-            <ShieldAlert className="w-6 h-6 animate-pulse" />
+        <div className="flex items-center gap-3 mb-4">
+          <div className="h-10 w-10 rounded-xl bg-red-600/20 border border-red-500/40 flex items-center justify-center text-red-400">
+            <ShieldAlert className="w-5 h-5" />
           </div>
           <div>
-            <h2 className="text-lg font-bold text-white">Emergency Kill Switch (Stage 13)</h2>
-            <p className="text-xs text-slate-400">Immediate deterministic halt of all automated execution</p>
+            <h2 className="text-base font-semibold text-white">Emergency Execution Halt</h2>
+            <p className="text-xs text-slate-400">Immediate deterministic halt of all automated order proposals</p>
           </div>
         </div>
 
         {isAlreadyActive ? (
           <div>
-            <div className="p-3.5 rounded-lg bg-red-950/30 border border-red-500/40 text-xs text-red-200 mb-4 leading-relaxed">
-              <span className="font-bold block mb-1">Status: KILL SWITCH IS CURRENTLY ACTIVE</span>
-              All new strategy proposals and order submissions are strictly blocked. To resume normal operations, deliberate operator authorization is required.
+            <div className="p-4 rounded-xl bg-red-950/30 border border-red-500/30 text-xs text-red-200 mb-5 leading-relaxed">
+              <span className="font-semibold block mb-1">Status: Emergency Halt Currently Active</span>
+              All strategy proposals and new order submissions are halted. Open positions remain protected by local stop limits. Resuming execution requires intentional operator confirmation.
             </div>
 
             <div className="flex justify-end gap-3">
               <button
                 onClick={onClose}
-                className="px-4 py-2 text-xs font-semibold text-slate-300 hover:text-white rounded-lg bg-slate-800 hover:bg-slate-700"
+                className="px-4 py-2 text-xs font-medium text-slate-300 hover:text-white rounded-xl bg-slate-800 hover:bg-slate-700 transition-colors cursor-pointer"
               >
                 Close Dialog
               </button>
@@ -61,19 +62,25 @@ export const KillSwitchModal: React.FC<KillSwitchModalProps> = ({
                   onResetKillSwitch();
                   onClose();
                 }}
-                className="px-5 py-2 text-xs font-bold rounded-lg text-white bg-emerald-600 hover:bg-emerald-500 transition-colors"
+                className="px-4 py-2 text-xs font-semibold rounded-xl text-white bg-emerald-600 hover:bg-emerald-500 transition-colors cursor-pointer shadow-[inset_0_1px_0_rgba(255,255,255,0.15)]"
               >
-                Authorize Normal Operations (Resume)
+                Resume Normal Execution
               </button>
             </div>
           </div>
         ) : (
           <div>
-            <p className="text-xs text-slate-300 mb-4 leading-relaxed">
-              Triggering the Kill Switch permanently blocks all automated entries and cancels pending orders. Per Stage 13 guidelines, existing open positions remain managed by their active stop-loss bracket unless explicitly requested below:
-            </p>
+            <div className="text-xs text-slate-300 mb-4 leading-relaxed space-y-2">
+              <p>
+                Triggering the Emergency Halt permanently suspends all automated strategy signal execution and cancels pending unexecuted orders.
+              </p>
+              <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800 text-slate-300">
+                <span className="font-semibold text-white block mb-0.5">Existing Position Policy:</span>
+                Existing open positions remain managed by their active stop-loss and take-profit brackets unless you explicitly choose to liquidate them immediately below.
+              </div>
+            </div>
 
-            <div className="p-3.5 rounded-lg bg-slate-950/70 border border-slate-800 mb-5">
+            <div className="p-3.5 rounded-xl bg-slate-950/70 border border-slate-800/80 mb-5">
               <label className="flex items-start gap-3 cursor-pointer">
                 <input
                   type="checkbox"
@@ -82,7 +89,7 @@ export const KillSwitchModal: React.FC<KillSwitchModalProps> = ({
                   className="mt-0.5 w-4 h-4 rounded bg-slate-900 border-slate-700 text-red-600 focus:ring-red-500"
                 />
                 <div>
-                  <span className="text-xs font-bold text-white block">
+                  <span className="text-xs font-semibold text-white block">
                     Also close all {openPositionsCount} open market position(s) immediately
                   </span>
                   <span className="text-[11px] text-slate-400 block mt-0.5">
@@ -95,7 +102,7 @@ export const KillSwitchModal: React.FC<KillSwitchModalProps> = ({
             <div className="flex justify-end gap-3">
               <button
                 onClick={onClose}
-                className="px-4 py-2 text-xs font-semibold text-slate-300 hover:text-white rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700"
+                className="px-4 py-2 text-xs font-medium text-slate-300 hover:text-white rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 transition-colors cursor-pointer"
               >
                 Cancel
               </button>
@@ -104,10 +111,9 @@ export const KillSwitchModal: React.FC<KillSwitchModalProps> = ({
                   onConfirmKillSwitch(closePositions);
                   onClose();
                 }}
-                className="px-5 py-2 text-xs font-bold rounded-lg text-white bg-red-600 hover:bg-red-500 shadow-lg shadow-red-950/60 transition-colors flex items-center gap-1.5"
+                className="px-4 py-2 text-xs font-semibold rounded-xl text-white bg-red-600 hover:bg-red-500 transition-colors cursor-pointer shadow-[inset_0_1px_0_rgba(255,255,255,0.15)]"
               >
-                <AlertOctagon className="w-4 h-4" />
-                <span>CONFIRM EMERGENCY KILL SWITCH</span>
+                Confirm Emergency Halt
               </button>
             </div>
           </div>

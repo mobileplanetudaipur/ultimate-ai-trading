@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Candle, MarketQuote, PositionRecord } from '../types/trading';
 import { calculateBollingerBands, calculateEMA, formatPrice } from '../utils/indicators';
 
@@ -9,12 +9,16 @@ interface MarketChartProps {
   positions: PositionRecord[];
 }
 
+type TimeframeOption = 'M1' | 'M5' | 'M15' | 'H1' | 'H4';
+
 export const MarketChart: React.FC<MarketChartProps> = ({
   symbol,
   quote,
   candles,
   positions
 }) => {
+  const [activeTimeframe, setActiveTimeframe] = useState<TimeframeOption>('M15');
+
   // Take last 45 candles for clean viewing
   const viewCandles = useMemo(() => candles.slice(-45), [candles]);
 
@@ -95,25 +99,48 @@ export const MarketChart: React.FC<MarketChartProps> = ({
   const symbolPositions = positions.filter(p => p.symbol === symbol);
 
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-sm flex flex-col justify-between">
-      {/* Chart Header */}
-      <div className="flex flex-wrap items-center justify-between gap-2 mb-3 pb-2 border-b border-slate-800/80">
-        <div className="flex items-center gap-3">
+    <div className="rounded-2xl border border-slate-800/80 bg-slate-900/60 p-5 backdrop-blur-xl shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] flex flex-col justify-between">
+      {/* Chart Header & Controls */}
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-4 pb-3 border-b border-slate-800/80">
+        <div className="flex flex-wrap items-center gap-4">
           <div>
-            <span className="text-base font-bold text-white tracking-wide">{symbol}</span>
-            <span className="ml-2 text-xs text-slate-400 font-mono">M15 Timeframe</span>
+            <div className="flex items-center gap-2">
+              <span className="text-base font-semibold text-white tracking-tight">{symbol}</span>
+              <span className="text-xs text-slate-400 font-mono">Real-Time Telemetry</span>
+            </div>
+            <div className="flex items-center gap-3 text-xs font-mono mt-0.5">
+              <span className="text-slate-400">
+                Bid: <span className="text-white font-medium tabular-nums">{formatPrice(quote.bid, quote.digits)}</span>
+              </span>
+              <span className="text-slate-400">
+                Ask: <span className="text-white font-medium tabular-nums">{formatPrice(quote.ask, quote.digits)}</span>
+              </span>
+              <span className="text-slate-400">
+                Spread: <span className="text-amber-400 font-medium tabular-nums">{quote.spreadPips.toFixed(1)}p</span>
+              </span>
+            </div>
           </div>
-          <div className="flex items-center gap-2 text-xs font-mono">
-            <span className="text-slate-400">Bid: <span className="text-white font-semibold">{formatPrice(quote.bid, quote.digits)}</span></span>
-            <span className="text-slate-400">Ask: <span className="text-white font-semibold">{formatPrice(quote.ask, quote.digits)}</span></span>
-            <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 text-[11px]">
-              Spread: {quote.spreadPips.toFixed(1)}p
-            </span>
+
+          {/* Timeframe selector controls */}
+          <div className="flex items-center p-1 rounded-xl bg-slate-950/80 border border-slate-800/80">
+            {(['M1', 'M5', 'M15', 'H1', 'H4'] as TimeframeOption[]).map(tf => (
+              <button
+                key={tf}
+                onClick={() => setActiveTimeframe(tf)}
+                className={`px-2.5 py-1 rounded-lg text-xs font-mono font-medium transition-all cursor-pointer ${
+                  activeTimeframe === tf
+                    ? 'bg-blue-600/30 text-blue-300 border border-blue-500/40 shadow-xs'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                {tf}
+              </button>
+            ))}
           </div>
         </div>
 
         {/* Legend */}
-        <div className="flex items-center gap-3 text-[11px] font-mono text-slate-400">
+        <div className="flex items-center gap-3 text-xs font-mono text-slate-400">
           <div className="flex items-center gap-1.5">
             <span className="w-2.5 h-0.5 bg-sky-400 rounded-full" />
             <span>EMA 20</span>
@@ -123,15 +150,15 @@ export const MarketChart: React.FC<MarketChartProps> = ({
             <span>EMA 50</span>
           </div>
           <div className="flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-sm bg-emerald-500" />
-            <span className="w-2 h-2 rounded-sm bg-rose-500" />
+            <span className="w-2 h-2 rounded-xs bg-emerald-500" />
+            <span className="w-2 h-2 rounded-xs bg-rose-500" />
             <span>Candles</span>
           </div>
         </div>
       </div>
 
       {/* SVG Canvas */}
-      <div className="relative w-full h-[280px] bg-slate-950/60 rounded-lg overflow-hidden border border-slate-800/60">
+      <div className="relative w-full h-[280px] bg-slate-950/80 rounded-xl overflow-hidden border border-slate-800/80 shadow-[inset_0_2px_8px_rgba(0,0,0,0.4)]">
         <svg
           viewBox={`0 0 ${chartWidth} ${chartHeight}`}
           preserveAspectRatio="none"
@@ -151,12 +178,13 @@ export const MarketChart: React.FC<MarketChartProps> = ({
                   stroke="#1e293b"
                   strokeDasharray="3 3"
                   strokeWidth="1"
+                  strokeOpacity="0.6"
                 />
                 <text
-                  x="6"
+                  x="8"
                   y={y - 4}
                   fill="#64748b"
-                  fontSize="9"
+                  fontSize="10"
                   fontFamily="monospace"
                 >
                   {formatPrice(priceLevel, quote.digits)}
@@ -172,7 +200,7 @@ export const MarketChart: React.FC<MarketChartProps> = ({
               fill="none"
               stroke="#818cf8"
               strokeWidth="1.5"
-              strokeOpacity="0.8"
+              strokeOpacity="0.85"
             />
           )}
           {ema20Path && (
@@ -181,7 +209,7 @@ export const MarketChart: React.FC<MarketChartProps> = ({
               fill="none"
               stroke="#38bdf8"
               strokeWidth="1.5"
-              strokeOpacity="0.8"
+              strokeOpacity="0.85"
             />
           )}
 
@@ -239,20 +267,22 @@ export const MarketChart: React.FC<MarketChartProps> = ({
                   strokeDasharray="4 2"
                 />
                 <rect
-                  x={chartWidth - 110}
+                  x={chartWidth - 120}
                   y={entryY - 10}
-                  width="105"
-                  height="18"
-                  fill="#1e293b"
-                  rx="3"
+                  width="115"
+                  height="20"
+                  fill="#0f172a"
+                  stroke="#334155"
+                  strokeWidth="1"
+                  rx="4"
                 />
                 <text
-                  x={chartWidth - 105}
-                  y={entryY + 3}
+                  x={chartWidth - 114}
+                  y={entryY + 4}
                   fill="#93c5fd"
-                  fontSize="9"
+                  fontSize="9.5"
                   fontFamily="monospace"
-                  fontWeight="bold"
+                  fontWeight="600"
                 >
                   {pos.side} {pos.sizeLots}L @ {formatPrice(pos.entryPrice, quote.digits)}
                 </text>
@@ -268,10 +298,10 @@ export const MarketChart: React.FC<MarketChartProps> = ({
                   strokeDasharray="2 2"
                 />
                 <text
-                  x={chartWidth - 75}
+                  x={chartWidth - 85}
                   y={slY - 3}
                   fill="#fca5a5"
-                  fontSize="9"
+                  fontSize="9.5"
                   fontFamily="monospace"
                 >
                   SL: {formatPrice(pos.stopLossPrice, quote.digits)}
@@ -290,10 +320,10 @@ export const MarketChart: React.FC<MarketChartProps> = ({
                       strokeDasharray="2 2"
                     />
                     <text
-                      x={chartWidth - 75}
+                      x={chartWidth - 85}
                       y={tpY - 3}
                       fill="#86efac"
-                      fontSize="9"
+                      fontSize="9.5"
                       fontFamily="monospace"
                     >
                       TP: {formatPrice(pos.takeProfitPrice, quote.digits)}
@@ -313,13 +343,14 @@ export const MarketChart: React.FC<MarketChartProps> = ({
             stroke="#e2e8f0"
             strokeWidth="1"
             strokeDasharray="2 4"
+            strokeOpacity="0.7"
           />
         </svg>
 
         {/* Live Floating Price Pill */}
         <div
-          className="absolute right-2 px-2 py-0.5 rounded bg-slate-900 border border-slate-700 text-xs font-mono font-bold text-white shadow-md pointer-events-none"
-          style={{ top: `${Math.max(8, Math.min(250, getY(quote.last) - 12))}px` }}
+          className="absolute right-3 px-2 py-0.5 rounded-lg bg-slate-900 border border-slate-700 text-xs font-mono font-semibold text-white shadow-lg pointer-events-none"
+          style={{ top: `${Math.max(8, Math.min(246, getY(quote.last) - 12))}px` }}
         >
           {formatPrice(quote.last, quote.digits)}
         </div>

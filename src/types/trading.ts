@@ -1,6 +1,6 @@
 // Domain types for Ultimate AI Trading Platform (Truthful & Demo/Simulation Only)
 
-export type OperatingMode = 'simulated' | 'read_only' | 'demo_pending' | 'disconnected';
+export type OperatingMode = 'simulated' | 'read_only' | 'demo' | 'demo_pending' | 'disconnected' | 'live';
 
 export type FeedFreshness = 'simulated' | 'stale' | 'unavailable';
 
@@ -100,7 +100,96 @@ export type OrderStatus =
   | 'SIMULATED_FILL'
   | 'REJECTED'
   | 'CANCELLED'
-  | 'EXPIRED';
+  | 'EXPIRED'
+  | 'TIMEOUT_UNKNOWN';
+
+// Stage 4 & 5: Distinct separated models for Order Intent, Broker Order, Deal/Fill, and Position
+
+export type OrderIntentStatus =
+  | 'DRAFT'
+  | 'RISK_APPROVED'
+  | 'SUBMITTED'
+  | 'TIMEOUT_UNKNOWN'
+  | 'REJECTED'
+  | 'COMPLETED';
+
+export interface OrderIntentRecord {
+  intentId: string;
+  clientOrderId: string;
+  idempotencyKey: string;
+  symbol: string;
+  side: 'BUY' | 'SELL';
+  requestedVolumeLots: number;
+  requestedPrice: number;
+  stopLossPrice: number;
+  takeProfitPrice: number;
+  maxSlippagePips: number;
+  strategyId: string;
+  status: OrderIntentStatus;
+  createdAt: number;
+  updatedAt: number;
+  rejectionReason?: string;
+  blindRetryForbidden: boolean; // Strict safety: never blind retry an uncertain submission
+  riskApprovalTicket?: string;
+}
+
+export type BrokerOrderStatus =
+  | 'PLACED'
+  | 'PARTIALLY_FILLED'
+  | 'FILLED'
+  | 'REJECTED'
+  | 'CANCELLED'
+  | 'EXPIRED'
+  | 'TIMEOUT_UNKNOWN';
+
+export interface BrokerOrderRecord {
+  brokerTicket: string;
+  intentId: string;
+  clientOrderId: string;
+  symbol: string;
+  side: 'BUY' | 'SELL';
+  orderType: 'MARKET' | 'LIMIT' | 'STOP';
+  requestedVolumeLots: number;
+  filledVolumeLots: number;
+  remainingVolumeLots: number;
+  requestedPrice: number;
+  averageFillPrice?: number;
+  stopLossPrice: number;
+  takeProfitPrice: number;
+  status: BrokerOrderStatus;
+  isBrokerConfirmed: boolean;
+  placedAt: number;
+  updatedAt: number;
+  rejectionReason?: string;
+}
+
+export type DealExecutionType =
+  | 'ENTRY_FILL'
+  | 'PARTIAL_FILL'
+  | 'EXIT_CLOSE'
+  | 'PARTIAL_CLOSE'
+  | 'STOP_LOSS_CLOSE'
+  | 'TAKE_PROFIT_CLOSE';
+
+export interface DealExecutionRecord {
+  dealTicket: string;
+  brokerOrderTicket: string;
+  positionTicket: string;
+  intentId?: string;
+  symbol: string;
+  side: 'BUY' | 'SELL';
+  dealType: DealExecutionType;
+  volumeLots: number;
+  executionPrice: number;
+  commission: number;
+  fee: number;
+  swap: number;
+  slippagePips: number;
+  timestamp: number;
+  isBrokerConfirmed: boolean;
+  isExternalOrManual: boolean;
+  comment?: string;
+}
 
 export interface OrderRecord {
   id: string;
@@ -141,9 +230,70 @@ export interface PositionRecord {
   realizedPnl: number;
   commission: number;
   swap: number;
-  brokerConfirmed: false; // Strictly false in simulation
+  brokerConfirmed: boolean; // Strictly false in simulation, true only with verified broker
   openedAt: number;
   strategyId: string;
+  isExternalOrManual?: boolean; // Flagged if detected externally on broker
+  stopLossFailed?: boolean; // Flagged if broker rejects stop modification
+  stopLossFailureReason?: string;
+  remainingVolumeLots?: number;
+}
+
+// Durable Shadow Observation with Genuine Provenance Tracking
+export interface ShadowObservationRecord {
+  observationId: string;
+  timestamp: number;
+  symbol: string;
+  sourceProvider: string;
+  isGenuineBrokerFeed: boolean;
+  provenanceDigest: string;
+  bid: number;
+  ask: number;
+  spreadPips: number;
+  latencyMs: number;
+  marketRegime: string;
+  shadowSignal: 'BUY' | 'SELL' | 'NO_TRADE';
+  shadowSignalConfidence: number;
+  noTradeReason?: string;
+}
+
+export interface ShadowValidationMetrics {
+  totalObservations: number;
+  genuineObservationsCount: number;
+  simulatedObservationsCount: number;
+  minSampleRequired: number; // 100 genuine observations required before claiming evidence
+  isProvenanceVerified: boolean;
+  provenanceStatus: 'GENUINE_FEED_VERIFIED' | 'INSUFFICIENT_GENUINE_OBSERVATIONS' | 'SIMULATED_DATA_EXCLUDED';
+  signalDistribution: {
+    buyCount: number;
+    sellCount: number;
+    noTradeCount: number;
+  };
+  averageSpreadPips: number;
+  maxSpreadPips: number;
+  dataQualityRatingPercent: number;
+  firstObservationTimestamp?: number;
+  lastObservationTimestamp?: number;
+}
+
+// Phase 9 Readiness Gating
+export interface Phase9GateResult {
+  gateId: string;
+  name: string;
+  category: 'BROKER_ADAPTER' | 'RISK_GATE' | 'STATE_SEPARATION' | 'RECONCILIATION' | 'SHADOW_VALIDATION' | 'SECURITY_RECOVERY' | 'LOCAL_CONFIG';
+  status: 'VERIFIED' | 'IMPLEMENTED_UNVERIFIED' | 'SIMULATED' | 'BLOCKED' | 'PENDING_USER_SETUP';
+  evidence: string;
+  isPassed: boolean;
+  blockerDescription?: string;
+}
+
+export interface Phase9ReadinessReport {
+  overallReadiness: 'BLOCKED_PENDING_BROKER_AND_SETUP' | 'READY_FOR_LOCAL_DEMO';
+  generatedAt: number;
+  gates: Phase9GateResult[];
+  passedTestsCount: number;
+  totalTestsCount: number;
+  requiredUserActions: string[];
 }
 
 export interface ClosedTradeRecord {
@@ -173,7 +323,9 @@ export interface AccountState {
   freeMargin: number;
   marginLevelPercent: number;
   leverage: number;
-  brokerConfirmed: false; // Always false in simulated mode
+  brokerConfirmed: boolean; // false in local simulation, true when confirmed by broker
+  isRealBrokerAccount?: boolean; // true if connected broker account is REAL (not demo)
+  brokerServerName?: string;
   lastReconciledAt: number;
   reconciliationStatus: 'LOCAL_CONSISTENT' | 'DISCREPANCY_DETECTED' | 'BROKER_GATEWAY_DISCONNECTED';
   discrepancies: string[];

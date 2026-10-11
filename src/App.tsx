@@ -21,6 +21,7 @@ import { economicCalendarService } from './services/economicCalendarService';
 import { calculateExecutionMetrics } from './services/metricsCalculator';
 import { checkpointService, DurableCheckpoint } from './services/storageCheckpoint';
 import { brokerGateway } from './services/brokerGateway';
+import { shadowValidationService } from './services/shadowValidationService';
 
 import { NavigationSidebar, ActiveNavTab } from './components/NavigationSidebar';
 import { TopBar } from './components/TopBar';
@@ -34,6 +35,7 @@ import { ShadowDemoView } from './views/ShadowDemoView';
 import { CalendarContextView } from './views/CalendarContextView';
 import { AuditRecoveryView } from './views/AuditRecoveryView';
 import { ConnectionsSettingsView } from './views/ConnectionsSettingsView';
+import { ReleasePackagesView } from './views/ReleasePackagesView';
 
 import { ModeSelectorModal } from './components/ModeSelectorModal';
 import { KillSwitchModal } from './components/KillSwitchModal';
@@ -44,7 +46,7 @@ export const App: React.FC = () => {
   // Navigation State
   const [activeTab, setActiveTab] = useState<ActiveNavTab>('overview');
 
-  // Operating State
+  // Operating State (Truthful default: Simulated Paper mode when broker is disconnected)
   const [operatingMode, setOperatingMode] = useState<OperatingMode>('simulated');
   const [selectedSymbol, setSelectedSymbol] = useState<string>('EUR/USD');
   const [quotes, setQuotes] = useState<MarketQuote[]>([]);
@@ -85,6 +87,7 @@ export const App: React.FC = () => {
   const [isModeModalOpen, setIsModeModalOpen] = useState(false);
   const [isKillSwitchModalOpen, setIsKillSwitchModalOpen] = useState(false);
   const [isCheckpointModalOpen, setIsCheckpointModalOpen] = useState(false);
+  const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
   const [bannerNotice, setBannerNotice] = useState<{ type: 'error' | 'success' | 'info'; text: string } | null>(null);
 
   // Helper to log audit event
@@ -133,11 +136,14 @@ export const App: React.FC = () => {
     const unsubscribe = marketDataService.subscribe(updatedQuote => {
       setQuotes(marketDataService.getAllQuotes());
 
+      // Stage 7 Shadow Mode: Record durable timestamped observation with genuine provenance
+      shadowValidationService.recordObservation(updatedQuote, 'NORMAL', 'NO_TRADE', 0);
+
       const { closedTrades: newlyClosed } = orderManager.updatePositionsWithQuote(updatedQuote);
 
       if (newlyClosed.length > 0) {
         for (const t of newlyClosed) {
-          riskEngine.recordCompletedTrade(t.netPnl);
+          riskEngine.recordCompletedTrade(t.netPnl, t.sizeLots);
           logAudit(
             'ORDER',
             t.netPnl >= 0 ? 'INFO' : 'WARN',
@@ -227,7 +233,7 @@ export const App: React.FC = () => {
     const proposedTp = evaluation.proposedTakeProfit || (proposedSide === 'BUY' ? activeQuote.ask + 0.0050 : activeQuote.bid - 0.0050);
     const entryEstimate = proposedSide === 'BUY' ? activeQuote.ask : activeQuote.bid;
 
-    // Phase 3 Deterministic Risk Gate Check
+    // Phase 3 Deterministic Risk Gate Check with comprehensive preflight checks
     const validation = riskEngine.validateOrderProposal(
       activeQuote,
       account,
@@ -235,7 +241,14 @@ export const App: React.FC = () => {
       orders,
       proposedSide,
       proposedStop,
-      entryEstimate
+      entryEstimate,
+      economicEvents,
+      {
+        operatingMode,
+        proposedTakeProfit: proposedTp,
+        recentClosedTrades: closedTrades,
+        isClosedCandleSignal: true
+      }
     );
 
     if (!validation.isApproved) {
@@ -267,8 +280,10 @@ export const App: React.FC = () => {
         simulateSlippagePips: 0.2
       });
 
+      riskEngine.recordOrderEntry();
       setOrders([...orderManager.getOrders()]);
       setPositions([...orderManager.getPositions()]);
+      setRiskStatus(riskEngine.getStatus());
 
       logAudit('ORDER', 'INFO', `Paper Order ${order.id} executed for ${order.requestedSizeLots} lots ${order.side} ${order.symbol} @ ${order.executedPrice}`, {
         orderId: order.id,
@@ -355,18 +370,26 @@ export const App: React.FC = () => {
   };
 
   const handleSaveCurrentCheckpoint = () => {
-    const chk = checkpointService.saveCheckpoint({
+    const res = checkpointService.saveCheckpoint({
       operatingMode,
       account,
       positions,
       orders,
+      intents: orderManager.getIntents(),
+      brokerOrders: orderManager.getBrokerOrders(),
+      deals: orderManager.getDeals(),
       closedTrades,
       riskLimits,
+      riskStatus,
       auditLogs
     });
-    setSavedCheckpoint(chk);
-    logAudit('SYSTEM', 'INFO', `Local checkpoint saved: ${chk.checkpointId}`, { timestamp: chk.timestamp }, 'OPERATOR');
-    showNotice(`Local checkpoint ${chk.checkpointId} saved to browser storage.`, 'success');
+    if (res.success && res.checkpoint) {
+      setSavedCheckpoint(res.checkpoint);
+      logAudit('SYSTEM', 'INFO', `Durable checkpoint saved: ${res.checkpoint.checkpointId}`, { timestamp: res.checkpoint.timestamp }, 'OPERATOR');
+      showNotice(`Durable checkpoint ${res.checkpoint.checkpointId} saved with integrity digest.`, 'success');
+    } else {
+      showNotice(`Checkpoint save failed: ${res.error || 'Unknown error'}`, 'error');
+    }
   };
 
   const handleRestoreCheckpoint = () => {
@@ -396,6 +419,8 @@ export const App: React.FC = () => {
       case 'calendar': return 'Macroeconomic Blackout Calendar';
       case 'audit': return 'Operational Audit & Checkpoints';
       case 'settings': return 'Bridge Connections & Settings';
+      case 'releases': return 'Cross-Platform App Install & Packages';
+      default: return 'Ultimate AI Trading';
     }
   };
 
@@ -408,6 +433,8 @@ export const App: React.FC = () => {
         operatingMode={operatingMode}
         riskStatus={riskStatus}
         openPositionsCount={positions.length}
+        isOpenMobile={isMobileNavOpen}
+        onCloseMobile={() => setIsMobileNavOpen(false)}
       />
 
       {/* Main Workspace Frame */}
@@ -419,7 +446,43 @@ export const App: React.FC = () => {
           feedLatencyMs={activeQuote.latencyMs}
           onTriggerKillSwitch={() => setIsKillSwitchModalOpen(true)}
           onTogglePause={handleTogglePause}
+          onOpenMobileNav={() => setIsMobileNavOpen(true)}
         />
+
+        {/* Execution Controls & Safety Gate Bar */}
+        <div className="bg-slate-900/40 border-b border-slate-800/80 px-4 sm:px-6 py-2.5 backdrop-blur-xl">
+          <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3 text-xs">
+            <div className="flex flex-wrap items-center gap-2.5">
+              <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full font-medium text-[11px] ${
+                operatingMode === 'live'
+                  ? 'bg-rose-500/15 text-rose-300 border border-rose-500/30'
+                  : operatingMode === 'demo'
+                  ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                  : 'bg-blue-500/15 text-blue-300 border border-blue-500/30'
+              }`}>
+                <ShieldAlert className={`w-3.5 h-3.5 ${operatingMode === 'live' ? 'text-rose-400' : operatingMode === 'demo' ? 'text-emerald-400' : 'text-blue-400'}`} />
+                {operatingMode === 'live' ? 'LIVE MODE (Approved Release Active)' : operatingMode === 'demo' ? 'XM DEMO CONNECTED' : 'SIMULATED PAPER MODE'}
+              </span>
+              <span className="text-slate-600 hidden sm:inline">|</span>
+              <span className="text-slate-400 text-xs">
+                Mode: <strong className="text-slate-300 font-medium capitalize">{operatingMode.replace('_', ' ')}</strong> • Feed: <strong className="text-slate-300 font-medium">In-Memory Synthetic</strong> • Bridge: <strong className="text-amber-400 font-medium">127.0.0.1:8000 Offline</strong>
+              </span>
+            </div>
+
+            <div className="flex items-center gap-3 font-mono text-xs">
+              <div className="flex items-center gap-1.5">
+                <span className="text-slate-500">Entry Gate:</span>
+                <span className={`px-2 py-0.5 rounded text-[11px] font-medium ${riskStatus.killSwitchTriggered ? 'bg-rose-500/20 text-rose-300 font-bold' : riskStatus.isTradingPaused ? 'bg-amber-500/20 text-amber-300' : 'bg-emerald-500/20 text-emerald-300'}`}>
+                  {riskStatus.killSwitchTriggered ? 'HALTED' : riskStatus.isTradingPaused ? 'PAUSED' : 'ACTIVE'}
+                </span>
+              </div>
+              <span className="text-slate-600 hidden md:inline">•</span>
+              <span className="text-slate-400 hidden md:inline text-[11px]">
+                Open positions guarded by local SL/TP brackets
+              </span>
+            </div>
+          </div>
+        </div>
 
         {/* Floating Notification Toast */}
         {bannerNotice && (
@@ -451,6 +514,7 @@ export const App: React.FC = () => {
               positions={positions}
               strategyEvaluations={strategyEvaluations}
               auditLogs={auditLogs}
+              operatingMode={operatingMode}
               onNavigateTab={setActiveTab}
             />
           )}
@@ -527,6 +591,10 @@ export const App: React.FC = () => {
 
           {activeTab === 'settings' && (
             <ConnectionsSettingsView />
+          )}
+
+          {activeTab === 'releases' && (
+            <ReleasePackagesView />
           )}
         </main>
 

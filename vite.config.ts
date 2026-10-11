@@ -5,9 +5,17 @@ import tailwindcss from '@tailwindcss/vite';
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  publicDir: 'public',
   server: {
     host: '0.0.0.0',
     port: 3000,
-    allowedHosts: true
+    allowedHosts: true,
+    headers: {
+      'Service-Worker-Allowed': '/'
+    }
+  },
+  build: {
+    // Retain full fidelity for PWA manifest and web icons
+    assetsInlineLimit: 0
   }
 });

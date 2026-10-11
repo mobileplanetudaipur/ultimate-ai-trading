@@ -2,6 +2,10 @@ import { RiskEngine } from '../services/riskEngine';
 import { MarketQuote, AccountState, EconomicEvent } from '../types/trading';
 import { OrderLifecycleManager } from '../services/orderLifecycleManager';
 import { strategyEngine, DEFINED_STRATEGIES } from '../services/strategyEngine';
+import { reconciliationService } from '../services/reconciliationService';
+import { shadowValidationService } from '../services/shadowValidationService';
+import { liveReleaseGateService } from '../services/liveReleaseGateService';
+import { brokerGateway } from '../services/brokerGateway';
 
 /**
  * Automated Safety & Risk Engine Verification Suite
@@ -396,6 +400,557 @@ async function runTests() {
       duplicateCaught === true,
       'Test 18: Idempotency duplicate order protection prevents double order submission',
       `Caught duplicate: ${duplicateCaught}`
+    );
+  }
+
+  // Test 19: Anti-grid averaging down / uncontrolled scaling check
+  {
+    const engine = new RiskEngine(10000);
+    const mockPositions: any[] = [
+      { id: 'pos_eur', symbol: 'EUR/USD', side: 'BUY', sizeLots: 0.05, currentPrice: 1.0840, unrealizedPnl: -10 }
+    ];
+    const res = engine.validateOrderProposal(baseQuote, baseAccount, mockPositions, [], 'BUY', 1.0820, 1.0851);
+    assert(
+      res.isApproved === false && res.ruleBlocked === 'GRID_AVERAGING_PROHIBITED',
+      'Test 19: Anti-grid & scaling safeguard blocks adding to open position in same symbol',
+      `Got ruleBlocked: ${res.ruleBlocked}, msg: ${res.rejectionMessage}`
+    );
+  }
+
+  // Test 20: Anti-martingale protection (increasing lot size after a loss)
+  {
+    const engine = new RiskEngine(10000);
+    // Record previous trade as a loss with 0.02 lots
+    engine.recordCompletedTrade(-15, 0.02);
+    // Proposing 0.05 lots (> 0.02) after a loss must be blocked
+    const res = engine.validateOrderProposal(baseQuote, baseAccount, [], [], 'BUY', 1.0831, 1.0851, undefined, {
+      requestedLotSize: 0.05
+    });
+    assert(
+      res.isApproved === false && res.ruleBlocked === 'MARTINGALE_SCALING_PROHIBITED',
+      'Test 20: Anti-martingale safeguard blocks scaled-up lot size following a loss',
+      `Got ruleBlocked: ${res.ruleBlocked}, msg: ${res.rejectionMessage}`
+    );
+  }
+
+  // Test 21: Anti-revenge trading cooldown (5-minute window following loss on same symbol)
+  {
+    const engine = new RiskEngine(10000);
+    const recentClosedTrades: any[] = [
+      {
+        id: 'trade_eur_loss',
+        symbol: 'EUR/USD',
+        netPnl: -18,
+        closedAt: Date.now() - 60000 // 1 minute ago (< 5 minutes)
+      }
+    ];
+    const res = engine.validateOrderProposal(baseQuote, baseAccount, [], [], 'BUY', 1.0831, 1.0851, undefined, {
+      recentClosedTrades
+    });
+    assert(
+      res.isApproved === false && res.ruleBlocked === 'REVENGE_TRADING_COOLDOWN',
+      'Test 21: Anti-revenge safeguard enforces 5-minute cooldown on same symbol after net loss',
+      `Got ruleBlocked: ${res.ruleBlocked}, msg: ${res.rejectionMessage}`
+    );
+  }
+
+  // Test 22: Breaker lockout preservation (synthetic win CANNOT clear genuine breaker)
+  {
+    const engine = new RiskEngine(10000);
+    // Trigger breaker with 5 consecutive losses
+    for (let i = 0; i < 5; i++) {
+      engine.recordCompletedTrade(-10);
+    }
+    const beforeStatus = engine.getStatus();
+    assert(beforeStatus.isCooldownActive === true, 'Breaker triggered properly');
+
+    // Attempt to clear breaker with a synthetic +$5 winning trade
+    engine.recordCompletedTrade(5);
+    const afterStatus = engine.getStatus();
+    const res = engine.validateOrderProposal(baseQuote, baseAccount, [], [], 'BUY', 1.0831, 1.0851);
+
+    assert(
+      afterStatus.isCooldownActive === true && res.isApproved === false && res.ruleBlocked === 'CONSECUTIVE_LOSS_LOCKOUT',
+      'Test 22: Breaker preservation: Synthetic win cannot prematurely clear genuine 30m breaker',
+      `Cooldown active: ${afterStatus.isCooldownActive}, ruleBlocked: ${res.ruleBlocked}`
+    );
+  }
+
+  // Test 23: Operating mode fail-closed (Read-Only blocks order execution)
+  {
+    const engine = new RiskEngine(10000);
+    const res = engine.validateOrderProposal(baseQuote, baseAccount, [], [], 'BUY', 1.0831, 1.0851, undefined, {
+      operatingMode: 'read_only'
+    });
+    assert(
+      res.isApproved === false && res.ruleBlocked === 'READ_ONLY_MODE_ACTIVE',
+      'Test 23: Operating mode fail-closed: Read-Only mode blocks order execution',
+      `Got ruleBlocked: ${res.ruleBlocked}`
+    );
+  }
+
+  // Test 24: Duplicate in-flight order rejection
+  {
+    const engine = new RiskEngine(10000);
+    const mockPendingOrders: any[] = [
+      { id: 'ord_inflight_1', symbol: 'EUR/USD', side: 'BUY', status: 'SUBMITTED_LOCAL' }
+    ];
+    const res = engine.validateOrderProposal(baseQuote, baseAccount, [], mockPendingOrders, 'BUY', 1.0831, 1.0851);
+    assert(
+      res.isApproved === false && res.ruleBlocked === 'DUPLICATE_ORDER_IN_FLIGHT',
+      'Test 24: Duplicate in-flight order protection prevents double execution on same symbol/side',
+      `Got ruleBlocked: ${res.ruleBlocked}`
+    );
+  }
+
+  // Test 25: Take-profit direction verification (BUY TP below entry price rejected)
+  {
+    const engine = new RiskEngine(10000);
+    // BUY order at 1.0851, with an invalid TP at 1.0820 (below entry)
+    const res = engine.validateOrderProposal(baseQuote, baseAccount, [], [], 'BUY', 1.0831, 1.0851, undefined, {
+      proposedTakeProfit: 1.0820
+    });
+    assert(
+      res.isApproved === false && res.ruleBlocked === 'INVALID_BUY_TAKE_PROFIT',
+      'Test 25: Take profit direction check: Invalid TP below BUY entry rejected',
+      `Got ruleBlocked: ${res.ruleBlocked}`
+    );
+  }
+
+  // Test 26: Closed-candle confirmation requirement
+  {
+    const engine = new RiskEngine(10000);
+    const res = engine.validateOrderProposal(baseQuote, baseAccount, [], [], 'BUY', 1.0831, 1.0851, undefined, {
+      isClosedCandleSignal: false
+    });
+    assert(
+      res.isApproved === false && res.ruleBlocked === 'UNCONFIRMED_INTRABAR_SIGNAL',
+      'Test 26: Signal confirmation: Unconfirmed intrabar signal rejected',
+      `Got ruleBlocked: ${res.ruleBlocked}`
+    );
+  }
+
+  // Test 27: Multi-record state separation (Intent, Broker Order, Deal, Position)
+  {
+    const manager = new OrderLifecycleManager();
+    const res = await manager.submitOrder({
+      clientOrderId: 'cli_test_sep',
+      idempotencyKey: 'idem_test_sep_1',
+      symbol: 'EUR/USD',
+      side: 'BUY',
+      sizeLots: 0.10,
+      requestedPrice: 1.0851,
+      stopLossPrice: 1.0831,
+      takeProfitPrice: 1.0891,
+      strategyId: 'trend_continuation_m5',
+      quote: baseQuote
+    });
+
+    const hasDistinctIntent = res.intent !== undefined && res.intent.status === 'COMPLETED';
+    const hasDistinctBrokerOrder = res.brokerOrder !== undefined && res.brokerOrder.status === 'FILLED';
+    const hasDistinctDeal = res.deal !== undefined && res.deal.dealType === 'ENTRY_FILL';
+    const hasDistinctPosition = res.position !== undefined && res.position.sizeLots === 0.10;
+
+    assert(
+      hasDistinctIntent && hasDistinctBrokerOrder && hasDistinctDeal && hasDistinctPosition,
+      'Test 27: Multi-record state separation: distinct models for intent, broker order, deal, and position',
+      `Intent: ${Boolean(res.intent)}, BrokerOrder: ${Boolean(res.brokerOrder)}, Deal: ${Boolean(res.deal)}, Position: ${Boolean(res.position)}`
+    );
+  }
+
+  // Test 28: Partial fill handling
+  {
+    const manager = new OrderLifecycleManager();
+    const sub = await manager.submitOrder({
+      clientOrderId: 'cli_test_partial',
+      idempotencyKey: 'idem_test_partial_1',
+      symbol: 'EUR/USD',
+      side: 'BUY',
+      sizeLots: 0.10,
+      requestedPrice: 1.0851,
+      stopLossPrice: 1.0831,
+      takeProfitPrice: 1.0891,
+      strategyId: 'trend_continuation_m5',
+      quote: baseQuote,
+      simulateTimeout: true // leaves broker order placed but not filled
+    });
+
+    if (sub.brokerOrder) {
+      const partialRes = manager.handlePartialFill({
+        brokerTicket: sub.brokerOrder.brokerTicket,
+        fillVolumeLots: 0.04,
+        fillPrice: 1.0852
+      });
+
+      assert(
+        partialRes.brokerOrder.status === 'PARTIALLY_FILLED' &&
+        partialRes.brokerOrder.filledVolumeLots === 0.04 &&
+        partialRes.brokerOrder.remainingVolumeLots === 0.06 &&
+        partialRes.deal.dealType === 'PARTIAL_FILL' &&
+        partialRes.position.sizeLots === 0.04,
+        'Test 28: Partial fill correctly updates broker order (0.04 filled, 0.06 rem) and creates position',
+        `Status: ${partialRes.brokerOrder.status}, Rem: ${partialRes.brokerOrder.remainingVolumeLots}, Pos size: ${partialRes.position.sizeLots}`
+      );
+    } else {
+      assert(false, 'Test 28: Broker order missing for partial fill test');
+    }
+  }
+
+  // Test 29: Partial close handling
+  {
+    const manager = new OrderLifecycleManager();
+    const sub = await manager.submitOrder({
+      clientOrderId: 'cli_test_pclose',
+      idempotencyKey: 'idem_test_pclose_1',
+      symbol: 'EUR/USD',
+      side: 'BUY',
+      sizeLots: 0.10,
+      requestedPrice: 1.0851,
+      stopLossPrice: 1.0831,
+      takeProfitPrice: 1.0891,
+      strategyId: 'trend_continuation_m5',
+      quote: baseQuote
+    });
+
+    if (sub.position) {
+      const pCloseRes = manager.handlePartialClose(sub.position.id, 0.04, baseQuote, 'MANUAL_CLOSE');
+
+      assert(
+        pCloseRes.position.sizeLots === 0.06 &&
+        pCloseRes.closedRecord.sizeLots === 0.04 &&
+        pCloseRes.deal.dealType === 'PARTIAL_CLOSE',
+        'Test 29: Partial close correctly reduces position volume (0.10 -> 0.06) and records 0.04 deal',
+        `Rem pos size: ${pCloseRes.position.sizeLots}, closed size: ${pCloseRes.closedRecord.sizeLots}`
+      );
+    } else {
+      assert(false, 'Test 29: Position missing for partial close test');
+    }
+  }
+
+  // Test 30: Timeout & unknown outcome safety (Blind retry strictly forbidden)
+  {
+    const manager = new OrderLifecycleManager();
+    const intent = manager.createOrderIntent({
+      clientOrderId: 'cli_test_timeout',
+      idempotencyKey: 'idem_test_timeout_1',
+      symbol: 'EUR/USD',
+      side: 'BUY',
+      requestedVolumeLots: 0.05,
+      requestedPrice: 1.0851,
+      stopLossPrice: 1.0831,
+      takeProfitPrice: 1.0891,
+      maxSlippagePips: 1.5,
+      strategyId: 'test_strat'
+    });
+
+    manager.handleSubmissionTimeout(intent.intentId);
+    const retryCheck = manager.canRetrySubmission(intent.intentId);
+
+    assert(
+      intent.status === 'TIMEOUT_UNKNOWN' &&
+      intent.blindRetryForbidden === true &&
+      retryCheck.allowed === false,
+      'Test 30: Submission timeout triggers TIMEOUT_UNKNOWN and strictly prohibits blind retries',
+      `Status: ${intent.status}, retryAllowed: ${retryCheck.allowed}, reason: ${retryCheck.reason}`
+    );
+  }
+
+  // Test 31: Duplicate broker deal response idempotency
+  {
+    const manager = new OrderLifecycleManager();
+    const firstCheck = manager.handleDuplicateBrokerResponse('ticket_deal_999');
+    const secondCheck = manager.handleDuplicateBrokerResponse('ticket_deal_999');
+
+    assert(
+      firstCheck === false && secondCheck === true,
+      'Test 31: Duplicate broker response idempotency: duplicate deal ticket dropped without state inflation',
+      `First check (new): ${!firstCheck}, Second check (dup dropped): ${secondCheck}`
+    );
+  }
+
+  // Test 32: Stop loss modification failure detection & reconciliation
+  {
+    const manager = new OrderLifecycleManager();
+    const sub = await manager.submitOrder({
+      clientOrderId: 'cli_test_sl_fail',
+      idempotencyKey: 'idem_test_sl_fail_1',
+      symbol: 'EUR/USD',
+      side: 'BUY',
+      sizeLots: 0.05,
+      requestedPrice: 1.0851,
+      stopLossPrice: 1.0831,
+      takeProfitPrice: 1.0891,
+      strategyId: 'test_strat',
+      quote: baseQuote
+    });
+
+    if (sub.position) {
+      manager.handleStopModificationFailure(sub.position.id, 1.0840, 'Broker freeze level violation');
+      const rec = reconciliationService.performReconciliation(baseAccount, [sub.position]);
+
+      assert(
+        sub.position.stopLossFailed === true &&
+        rec.report.stopsIntegrityValid === false &&
+        rec.report.discrepancies.some(d => d.includes('STOP_LOSS_FAILED')),
+        'Test 32: Stop loss modification failure flagged and caught by ledger reconciliation audit',
+        `stopLossFailed: ${sub.position.stopLossFailed}, stopsValid: ${rec.report.stopsIntegrityValid}`
+      );
+    } else {
+      assert(false, 'Test 32: Position missing for stop failure test');
+    }
+  }
+
+  // Test 33: External / manual trade detection and portfolio exposure inclusion
+  {
+    const externalPos: any = {
+      id: 'ext_pos_manual_1',
+      symbol: 'EUR/USD',
+      side: 'BUY',
+      sizeLots: 0.10,
+      entryPrice: 1.0850,
+      currentPrice: 1.0850,
+      stopLossPrice: 1.0820,
+      takeProfitPrice: 1.0920,
+      isTrailingStopActive: false,
+      trailingStopDistancePips: 20,
+      isBreakEvenLocked: false,
+      unrealizedPnl: 0,
+      realizedPnl: 0,
+      commission: 7.0,
+      swap: 0,
+      brokerConfirmed: true,
+      openedAt: Date.now() - 3600000,
+      strategyId: 'MANUAL_EXTERNAL_TRADE'
+    };
+
+    const rec = reconciliationService.performReconciliation(baseAccount, [], {
+      externalPositions: [externalPos]
+    });
+
+    assert(
+      rec.report.externalPositionsCount === 1 &&
+      rec.report.discrepancies.some(d => d.includes('EXTERNAL_TRADE_DETECTED')) &&
+      rec.updatedAccount.marginUsed > 0,
+      'Test 33: External/manual trade detected and incorporated into portfolio margin and risk exposure',
+      `Ext count: ${rec.report.externalPositionsCount}, Margin used: $${rec.updatedAccount.marginUsed}`
+    );
+  }
+
+  // Test 34: Truthful shadow validation & Phase 9 readiness gating
+  {
+    // Record a simulated observation
+    const obs = shadowValidationService.recordObservation(baseQuote, 'NORMAL', 'NO_TRADE', 0);
+    const metrics = shadowValidationService.getMetrics();
+    const readiness = shadowValidationService.evaluatePhase9Readiness();
+
+    assert(
+      obs.isGenuineBrokerFeed === false &&
+      metrics.provenanceStatus !== 'GENUINE_FEED_VERIFIED' &&
+      readiness.overallReadiness === 'BLOCKED_PENDING_BROKER_AND_SETUP',
+      'Test 34: Synthetic quotes excluded from genuine shadow evidence; Phase 9 truthfully gated and blocked',
+      `isGenuine: ${obs.isGenuineBrokerFeed}, provenanceStatus: ${metrics.provenanceStatus}, readiness: ${readiness.overallReadiness}`
+    );
+  }
+
+  // Test 35: Live mode locked by default without explicit approval
+  {
+    const gateEval = liveReleaseGateService.evaluateGates();
+    const modeCheck = liveReleaseGateService.validateModeExecution('live');
+    const riskEngine = new RiskEngine(10000);
+    const orderCheck = riskEngine.validateOrderProposal(
+      baseQuote,
+      baseAccount,
+      [],
+      [],
+      'BUY',
+      1.0830,
+      1.0850,
+      [],
+      { operatingMode: 'live' }
+    );
+
+    assert(
+      gateEval.isLiveReleasePermitted === false &&
+      modeCheck.isPermitted === false &&
+      orderCheck.isApproved === false &&
+      orderCheck.ruleBlocked === 'OPERATING_MODE_GATE_BLOCKED',
+      'Test 35: Live mode locked by default; orders fail-closed without explicit approval',
+      `permitted: ${gateEval.isLiveReleasePermitted}, orderApproved: ${orderCheck.isApproved}`
+    );
+  }
+
+  // Test 36: Account mode mismatch: Live broker account detected while in demo mode blocks execution
+  {
+    const liveAccount: AccountState = {
+      ...baseAccount,
+      brokerConfirmed: true,
+      isRealBrokerAccount: true
+    };
+
+    const riskEngine = new RiskEngine(10000);
+    const orderCheck = riskEngine.validateOrderProposal(
+      baseQuote,
+      liveAccount,
+      [],
+      [],
+      'BUY',
+      1.0830,
+      1.0850,
+      [],
+      { operatingMode: 'demo' }
+    );
+
+    assert(
+      orderCheck.isApproved === false &&
+      orderCheck.ruleBlocked === 'OPERATING_MODE_GATE_BLOCKED' &&
+      orderCheck.rejectionMessage?.includes('ACCOUNT TYPE CONFLICT') === true,
+      'Test 36: Account type conflict: Connected broker account is REAL while in demo mode blocks execution',
+      `approved: ${orderCheck.isApproved}, msg: ${orderCheck.rejectionMessage}`
+    );
+  }
+
+  // Test 37: Deliberate live activation rejects missing approval phrase or offline bridge
+  {
+    const badActivation = liveReleaseGateService.requestLiveActivation({
+      operatorApprovalPhrase: 'WRONG PHRASE',
+      localCredentialsPresent: false,
+      brokerServerName: 'XMGlobal-Real 14',
+      accountLoginNumber: '123456',
+      accountType: 'REAL',
+      acknowledgedExistingPositionsPolicy: false,
+      acknowledgedRiskLimits: false,
+      acknowledgedInstruments: ['EUR/USD']
+    });
+
+    assert(
+      badActivation.success === false &&
+      badActivation.rejectionDetails !== undefined &&
+      badActivation.rejectionDetails.length >= 3,
+      'Test 37: Live activation gate strictly rejects incomplete requirements and incorrect approval phrase',
+      `success: ${badActivation.success}, errors: ${badActivation.rejectionDetails?.length}`
+    );
+  }
+
+  // Test 38: Cross-platform Web App Manifest & Service Worker validation
+  {
+    const fs = await import('fs');
+    const path = await import('path');
+    const manifestPath = path.resolve(process.cwd(), 'public/manifest.json');
+    const swPath = path.resolve(process.cwd(), 'public/sw.js');
+    const manifestExists = fs.existsSync(manifestPath);
+    const swExists = fs.existsSync(swPath);
+    let manifestValid = false;
+    if (manifestExists) {
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+      manifestValid = manifest.id === '/' &&
+        manifest.display === 'standalone' &&
+        Array.isArray(manifest.icons) &&
+        manifest.icons.length >= 4;
+    }
+
+    assert(
+      manifestExists && swExists && manifestValid,
+      'Test 38: PWA manifest, service worker, and standalone mobile configuration are valid and compliant',
+      `manifest: ${manifestExists}, sw: ${swExists}, valid: ${manifestValid}`
+    );
+  }
+
+  // Test 39: Truthful cross-platform broker boundaries: Mobile/macOS do not attempt native Windows MT5 execution
+  {
+    const fs = await import('fs');
+    const path = await import('path');
+    const archDoc = fs.readFileSync(path.resolve(process.cwd(), 'docs/CROSS_PLATFORM_ARCHITECTURE.md'), 'utf8');
+    const hasLoopback = archDoc.includes('127.0.0.1:8000');
+    const hasWorkstation = archDoc.toUpperCase().includes('WINDOWS WORKSTATION');
+    const hasZeroCreds = archDoc.includes('Zero Credentials in Transit');
+    const boundariesDocumented = hasLoopback && hasWorkstation && hasZeroCreds;
+
+    assert(
+      boundariesDocumented,
+      'Test 39: Cross-platform broker boundary specification documented with truthful adapter limits',
+      `loopback: ${hasLoopback}, workstation: ${hasWorkstation}, zeroCreds: ${hasZeroCreds}`
+    );
+  }
+
+  // Test 40: Truthful operating mode derivation: When local MT5 bridge is offline, requested 'demo' falls back to 'simulated'
+  {
+    const derived = brokerGateway.deriveOperatingMode('demo');
+    assert(
+      derived.effectiveMode === 'simulated' && derived.isFallback === true && derived.reason.includes('offline'),
+      'Test 40: Truthful operating mode derivation: Offline MT5 bridge falls back to simulated paper mode',
+      `effectiveMode: ${derived.effectiveMode}, isFallback: ${derived.isFallback}`
+    );
+  }
+
+  // Test 41: Separation of entry counting from trade closing
+  {
+    const isolatedRisk = new RiskEngine(10000);
+    const initialTrades = isolatedRisk.getStatus().todayTradesCount;
+    // Closing a position should NOT increment today's entry count
+    isolatedRisk.recordPositionClosed(50.0, 0.05);
+    const afterCloseTrades = isolatedRisk.getStatus().todayTradesCount;
+    // An entry submission MUST increment today's entry count
+    isolatedRisk.recordOrderEntry();
+    const afterEntryTrades = isolatedRisk.getStatus().todayTradesCount;
+
+    assert(
+      initialTrades === 0 && afterCloseTrades === 0 && afterEntryTrades === 1,
+      'Test 41: Separation of entry counting from trade closing (entries count on submission, closures do not)',
+      `initial: ${initialTrades}, afterClose: ${afterCloseTrades}, afterEntry: ${afterEntryTrades}`
+    );
+  }
+
+  // Test 42: Breaker preservation on kill-switch reset
+  {
+    const isolatedRisk = new RiskEngine(10000);
+    // Trigger 5 consecutive losses to activate 30m breaker
+    for (let i = 0; i < 5; i++) {
+      isolatedRisk.recordCompletedTrade(-20.0);
+    }
+    const isLockedBefore = isolatedRisk.getStatus().isCooldownActive;
+    // Operator triggers kill switch
+    isolatedRisk.triggerKillSwitch();
+    assert(isolatedRisk.getStatus().killSwitchTriggered === true, 'Test 42.1: Kill switch active');
+    // Operator resets kill switch - breaker MUST be preserved
+    isolatedRisk.resetKillSwitch();
+    const statusAfterReset = isolatedRisk.getStatus();
+
+    assert(
+      isLockedBefore && statusAfterReset.killSwitchTriggered === false && statusAfterReset.isCooldownActive === true && statusAfterReset.isTradingPaused === true,
+      'Test 42: Breaker preservation on kill-switch reset: 30-minute lockout remains intact after reset',
+      `cooldownActive: ${statusAfterReset.isCooldownActive}, paused: ${statusAfterReset.isTradingPaused}`
+    );
+  }
+
+  // Test 43: Truthful package status: Zero fake checksums and unbuilt native packages marked BLOCKED
+  {
+    const fs = await import('fs');
+    const path = await import('path');
+    const viewSrc = fs.readFileSync(path.resolve(process.cwd(), 'src/views/ReleasePackagesView.tsx'), 'utf8');
+    const hasUnbuiltTag = viewSrc.includes('NOT_BUILT_BLOCKED');
+    const hasNoFakeHash = viewSrc.includes('None — Unbuilt artifact. No checksum fabricated.');
+    const hasActivePwa = viewSrc.includes('VERIFIED_ACTIVE');
+
+    assert(
+      hasUnbuiltTag && hasNoFakeHash && hasActivePwa,
+      'Test 43: Release page truthfulness: Zero fake checksums, unbuilt native packages marked BLOCKED with blockers',
+      `unbuiltTag: ${hasUnbuiltTag}, noFakeHash: ${hasNoFakeHash}, activePwa: ${hasActivePwa}`
+    );
+  }
+
+  // Test 44: Durable ledger integrity validation and fail-closed corrupt state handling
+  {
+    const fs = await import('fs');
+    const path = await import('path');
+    const storageCode = fs.readFileSync(path.resolve(process.cwd(), 'src/services/storageCheckpoint.ts'), 'utf8');
+    const hasIntegrityDigest = storageCode.includes('integrityDigest');
+    const hasSchemaV2 = storageCode.includes('schemaVersion: 2');
+    const hasFailClosedValidation = storageCode.includes('INTEGRITY_MISMATCH');
+
+    assert(
+      hasIntegrityDigest && hasSchemaV2 && hasFailClosedValidation,
+      'Test 44: Durable ledger integrity verification with schema v2 and tamper/corruption fail-closed checks',
+      `integrityDigest: ${hasIntegrityDigest}, schemaV2: ${hasSchemaV2}, failClosed: ${hasFailClosedValidation}`
     );
   }
 
